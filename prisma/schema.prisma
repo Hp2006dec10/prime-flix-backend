@@ -1,0 +1,140 @@
+// This is your Prisma schema file for LLM Performance & Memory Management.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------
+// 1. LLM CONVERSATION MEMORY SCHEMAS
+// ------------------------------------------------------
+
+enum MessageRole {
+  SYSTEM
+  USER
+  ASSISTANT
+  TOOL
+}
+
+enum SessionStatus {
+  ACTIVE
+  ARCHIVED
+  EXPIRED
+}
+
+model ConversationSession {
+  id             String          @id @default(uuid())
+  userId         String          @map("user_id")
+  title          String?
+  systemPrompt   String?         @map("system_prompt") @db.Text
+  summaryContext String?         @map("summary_context") @db.Text
+  tokenCount     Int             @default(0) @map("token_count")
+  status         SessionStatus   @default(ACTIVE)
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  messages       ChatMessage[]
+  vectorChunks   VectorMemoryChunk[]
+  executionLogs  LLMExecutionLog[]
+
+  @@index([userId])
+  @@map("conversation_sessions")
+}
+
+model ChatMessage {
+  id               String          @id @default(uuid())
+  sessionId        String          @map("session_id")
+  role             MessageRole
+  content          String          @db.Text
+  name             String?
+  promptTokens     Int?            @map("prompt_tokens")
+  completionTokens Int?            @map("completion_tokens")
+  metadata         Json?           // Stores function calls, tool outputs, attachments, etc.
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  session          ConversationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  executionLogs    LLMExecutionLog[]
+  vectorChunks     VectorMemoryChunk[]
+
+  @@index([sessionId])
+  @@map("chat_messages")
+}
+
+model VectorMemoryChunk {
+  id           String              @id @default(uuid())
+  sessionId    String              @map("session_id")
+  messageId    String?             @map("message_id")
+  chunkContent String              @map("chunk_content") @db.Text
+  // For pgvector in PostgreSQL: vector(1536) for OpenAI text-embedding-3-small / ada-002
+  // Supported in Prisma via raw query or unsupported type:
+  // embedding  Unsupported("vector(1536)")? 
+  metadata     Json?               // Includes source docs, page numbers, similarity scores
+  createdAt    DateTime            @default(now()) @map("created_at")
+
+  session      ConversationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  message      ChatMessage?        @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+  @@map("vector_memory_chunks")
+}
+
+// ------------------------------------------------------
+// 2. LLM PERFORMANCE & MONITORING SCHEMAS
+// ------------------------------------------------------
+
+model LLMExecutionLog {
+  id               String               @id @default(uuid())
+  sessionId        String?              @map("session_id")
+  messageId        String?              @map("message_id")
+  provider         String               @default("openai") // e.g. openai, anthropic
+  model            String               // e.g. gpt-4o, gpt-4o-mini
+  promptTokens     Int                  @default(0) @map("prompt_tokens")
+  completionTokens Int                  @default(0) @map("completion_tokens")
+  totalTokens      Int                  @default(0) @map("total_tokens")
+  latencyMs        Int                  @map("latency_ms") // Total roundtrip time in ms
+  ttftMs           Int?                 @map("ttft_ms")    // Time-To-First-Token in ms for streaming
+  costUsd          Decimal              @default(0.000000) @map("cost_usd") @db.Decimal(10, 6)
+  statusCode       Int                  @default(200) @map("status_code")
+  errorMessage     String?              @map("error_message") @db.Text
+  createdAt        DateTime             @default(now()) @map("created_at")
+
+  session          ConversationSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  message          ChatMessage?         @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  evaluation       LLMEvaluationLog?
+
+  @@index([sessionId])
+  @@index([model])
+  @@index([createdAt])
+  @@map("llm_execution_logs")
+}
+
+model LLMEvaluationLog {
+  id                 String          @id @default(uuid())
+  executionLogId     String          @unique @map("execution_log_id")
+  rating             Int?            // e.g. 1 to 5 star rating or +1 / -1
+  userFeedback       String?         @map("user_feedback") @db.Text
+  hallucinationScore Float?          @map("hallucination_score") // 0.0 to 1.0 (eval framework output)
+  sentimentScore     Float?          @map("sentiment_score")     // -1.0 to 1.0
+  toxicityScore      Float?          @map("toxicity_score")      // 0.0 to 1.0
+  createdAt          DateTime        @default(now()) @map("created_at")
+
+  executionLog       LLMExecutionLog @relation(fields: [executionLogId], references: [id], onDelete: Cascade)
+
+  @@map("llm_evaluation_logs")
+}
+
+model LLMUserQuotaRateLimit {
+  id                  String   @id @default(uuid())
+  userId              String   @unique @map("user_id")
+  dailyTokenLimit     Int      @default(100000) @map("daily_token_limit")
+  dailyTokensUsed     Int      @default(0) @map("daily_tokens_used")
+  monthlyCostLimitUsd Decimal  @default(10.00) @map("monthly_cost_limit_usd") @db.Decimal(10, 2)
+  monthlyCostUsedUsd  Decimal  @default(0.00) @map("monthly_cost_used_usd") @db.Decimal(10, 6)
+  lastResetAt         DateTime @default(now()) @map("last_reset_at")
+
+  @@map("llm_user_quota_rate_limits")
+}
