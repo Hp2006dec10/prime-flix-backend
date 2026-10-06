@@ -17,6 +17,12 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
 
+    # External Movie & AI APIs
+    TMDB_API_KEY: str
+    OMDB_API_KEY: str
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-1.5-flash"
+
     # JWT Authentication
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"

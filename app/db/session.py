@@ -13,11 +13,20 @@ engine = create_engine(settings.DATABASE_URL, echo=False, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+from sqlalchemy import text
+
+
 def init_db():
     """
     Initializes database tables using DATABASE_URL directly.
     """
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        try:
+            conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre VARCHAR(255);"))
+            conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS language VARCHAR(100);"))
+        except Exception as e:
+            logger.warning(f"Could not auto-add genre/language columns: {e}")
     logger.info("Database initialized successfully.")
 
 
