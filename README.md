@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
@@ -34,3 +35,48 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+=======
+# PrimeFlix Backend
+
+FastAPI backend application powered by `uv` Python package manager.
+
+## Prerequisites
+
+- [uv](https://github.com/astral-sh/uv) installed on your system.
+
+## Setup & Running
+
+1. **Install Dependencies**
+   ```bash
+   uv sync
+   ```
+
+2. **Run Development Server**
+   ```bash
+   uv run uvicorn app.main:app --reload --port 8000
+   ```
+
+3. **Interactive Documentation**
+   - Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - ReDoc: [http://localhost:8000/redoc](http://localhost:8000/redoc)
+   - Health check: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
+
+## Project Structure
+
+```
+backend/
+├── app/
+│   ├── api/
+│   │   └── v1/
+│   │       ├── endpoints/
+│   │       │   └── health.py
+│   │       └── router.py
+│   ├── core/
+│   │   └── config.py
+│   └── main.py
+├── .env.example
+├── .gitignore
+├── pyproject.toml
+└── README.md
+```
+>>>>>>> cf9e51b0ffe900ccdc242f126f7d6397aef7a8a3
