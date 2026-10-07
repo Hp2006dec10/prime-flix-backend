@@ -25,8 +25,9 @@ def init_db():
         try:
             conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre VARCHAR(255);"))
             conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS language VARCHAR(100);"))
+            conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user';"))
         except Exception as e:
-            logger.warning(f"Could not auto-add genre/language columns: {e}")
+            logger.warning(f"Could not auto-add DB columns: {e}")
     logger.info("Database initialized successfully.")
 
 

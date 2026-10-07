@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select, and_
@@ -19,6 +19,7 @@ from app.schemas.auth import (
     MessageResponse,
     UserOut,
     PasswordStrengthResponse,
+    UpdateUserRoleRequest,
 )
 from app.core.security import (
     hash_password,
@@ -479,3 +480,87 @@ async def logout(current_user: User = Depends(get_current_user)):
     Protected endpoint to handle session logout.
     """
     return MessageResponse(message="Successfully logged out.")
+
+
+@router.get("/users", response_model=List[UserOut], summary="List All System Users (Admin / Owner required)")
+async def get_all_users(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    actor_role = current_user.role or "user"
+    if actor_role not in ["admin", "owner"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Admin or Owner role required to list system users."
+        )
+
+    stmt = select(User).order_by(User.id.asc())
+    users = db.execute(stmt).scalars().all()
+    return [UserOut.model_validate(u) for u in users]
+
+
+@router.patch("/users/role", response_model=UserOut, summary="Update User Role (Admin / Owner permissions)")
+async def update_user_role(
+    req: UpdateUserRoleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    actor_role = current_user.role or "user"
+
+    # 1. Simple users cannot modify any role
+    if actor_role == "user":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Simple users cannot change user roles."
+        )
+
+    stmt = select(User).where(User.id == req.target_user_id)
+    target_user = db.execute(stmt).scalars().first()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target user not found."
+        )
+
+    target_current_role = target_user.role or "user"
+    new_role = req.new_role
+
+    # 2. Logic for Admin Actor:
+    if actor_role == "admin":
+        # Cannot modify an Owner
+        if target_current_role == "owner":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Admin cannot modify an Owner user."
+            )
+        # Cannot assign 'owner' role
+        if new_role == "owner":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Admin cannot grant the Owner role."
+            )
+        # Cannot demote an admin to user (only promotion from 'user' -> 'admin' is allowed)
+        if target_current_role == "admin" and new_role == "user":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Predefined admins can change simple users to admin, but NOT the reverse."
+            )
+        # Only allowed: target_current_role == 'user' and new_role == 'admin'
+        if target_current_role == "user" and new_role == "admin":
+            target_user.role = "admin"
+        elif target_current_role == new_role:
+            pass  # no-op
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied: Admin can only promote simple users to admin role."
+            )
+
+    # 3. Logic for Owner Actor:
+    elif actor_role == "owner":
+        # Owner can change the role of any user to anything ('user', 'admin', 'owner')
+        target_user.role = new_role
+
+    db.commit()
+    db.refresh(target_user)
+    return UserOut.model_validate(target_user)

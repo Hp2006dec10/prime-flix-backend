@@ -150,6 +150,15 @@ def process_movie_id(client: httpx.Client, db: Session, tmdb_id: int):
         logger.info(f"Found IMDB ID {imdb_id}. Fetching exact details from OMDB API...")
         omdb_data = fetch_omdb_movie(client, imdb_id)
 
+    if not omdb_data and title:
+        # Fallback to search OMDB by title
+        params = {"apikey": settings.OMDB_API_KEY, "t": title}
+        if release_year:
+            params["y"] = str(release_year)
+        o_res = client.get(OMDB_BASE_URL, params=params)
+        if o_res.status_code == 200 and o_res.json().get("Response") == "True":
+            omdb_data = o_res.json()
+
     if omdb_data:
         title = omdb_data.get("Title") or title
         avg_rating = parse_float(omdb_data.get("imdbRating")) or avg_rating
@@ -195,6 +204,7 @@ def process_movie_id(client: httpx.Client, db: Session, tmdb_id: int):
         logger.info(f"Updated existing Movie record (ID: {movie.id}, Title: '{title}')")
     else:
         movie = Movie(
+            id=f"MOV-{tmdb_id}",
             tmdb_id=tmdb_id,
             imdb_id=imdb_id,
             title=title,
@@ -208,7 +218,7 @@ def process_movie_id(client: httpx.Client, db: Session, tmdb_id: int):
             director_id=director_obj.id if director_obj else None
         )
         db.add(movie)
-        logger.info(f"Inserted new Movie record: '{title}' (TMDB ID: {tmdb_id}, IMDB ID: {imdb_id})")
+        logger.info(f"Inserted new Movie record (ID: MOV-{tmdb_id}): '{title}' (TMDB ID: {tmdb_id}, IMDB ID: {imdb_id})")
 
     db.commit()
 

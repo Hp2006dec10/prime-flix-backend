@@ -17,6 +17,7 @@ class User(Base):
     hashed_password = Column(String(255), nullable=False)
     is_active = Column(Boolean, default=False, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
+    role = Column(String(50), default="user", nullable=False)  # 'user', 'admin', 'owner'
     
     # Brute force login lockout tracking
     failed_login_attempts = Column(Integer, default=0, nullable=False)
@@ -63,7 +64,7 @@ class Director(Base):
 class Movie(Base):
     __tablename__ = "movies"
 
-    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    id = Column(String(50), primary_key=True, index=True)  # Format e.g. 'MOV-1', 'MOV-100'
     tmdb_id = Column(Integer, unique=True, index=True, nullable=True)
     imdb_id = Column(String(50), unique=True, index=True, nullable=True)
     title = Column(String(255), nullable=False, index=True)
@@ -80,4 +81,32 @@ class Movie(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     director = relationship("Director", back_populates="movies")
+
+
+class CinematicUniverse(Base):
+    __tablename__ = "cinematic_universes"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    name = Column(String(255), nullable=False, unique=True, index=True)
+    description = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    contents = relationship("UniverseContent", back_populates="universe", cascade="all, delete-orphan")
+
+
+class UniverseContent(Base):
+    __tablename__ = "universe_contents"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    universe_id = Column(Integer, ForeignKey("cinematic_universes.id", ondelete="CASCADE"), nullable=False, index=True)
+    content_id = Column(String(50), nullable=False, index=True)  # Identifier like 'MOV-1' or 'SER-1'
+    content_type = Column(String(50), default="movie", nullable=False)  # 'movie' or 'web_series'
+    order_in_universe = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+    universe = relationship("CinematicUniverse", back_populates="contents")
+
 

@@ -62,10 +62,16 @@ class UserOut(BaseModel):
     email: str
     is_verified: bool
     is_active: bool
+    role: str = "user"
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class UpdateUserRoleRequest(BaseModel):
+    target_user_id: int
+    new_role: Literal["user", "admin", "owner"]
 
 
 class TokenResponse(BaseModel):

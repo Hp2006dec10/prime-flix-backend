@@ -42,3 +42,18 @@ def get_current_user(
         )
 
     return user
+
+
+def get_admin_or_owner_user(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """
+    Ensures current user has 'admin' or 'owner' role.
+    """
+    if current_user.role not in ["admin", "owner"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: Only Admins and Owners can perform this action."
+        )
+    return current_user
+
