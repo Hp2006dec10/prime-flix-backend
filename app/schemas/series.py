@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from app.schemas.movies import DirectorResponse
 
 
@@ -60,9 +60,13 @@ class WebSeriesResponse(BaseModel):
     total_seasons: int = 1
     poster_image_url: Optional[str] = None
     genre: Optional[str] = None
+    genre_percentages: Optional[Dict[str, int]] = None
     language: Optional[str] = None
     director_id: Optional[int] = None
     director: Optional[DirectorResponse] = None
+    ott_url: Optional[str] = None
+    ott_platform: Optional[str] = None
+    ott_providers: Optional[List[Dict[str, Any]]] = None
 
     class Config:
         from_attributes = True

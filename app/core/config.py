@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     TMDB_API_KEY: str
     OMDB_API_KEY: str
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-1.5-flash"
+    GEMINI_MODEL: str = "gemini-3.8-flash"
 
     # JWT Authentication
     JWT_SECRET: str

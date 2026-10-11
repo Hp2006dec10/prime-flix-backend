@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.db.models import Movie, Director, CinematicUniverse, UniverseContent, User, WebSeries, Season, Episode
-from app.api.deps import get_admin_or_owner_user
+from app.api.deps import get_admin_or_owner_user, get_optional_current_user
 from app.schemas.movies import (
     MovieResponse,
     MoodRequest,
@@ -52,6 +52,7 @@ def series_to_movie_response(s: WebSeries) -> MovieResponse:
         release_year=s.release_year,
         poster_image_url=s.poster_image_url,
         genre=s.genre,
+        genre_percentages=s.genre_percentages,
         language=s.language,
         director_id=s.director_id,
         director=s.director,
@@ -59,6 +60,7 @@ def series_to_movie_response(s: WebSeries) -> MovieResponse:
         total_seasons=s.total_seasons,
         ott_url=getattr(s, "ott_url", None),
         ott_platform=getattr(s, "ott_platform", None),
+        ott_providers=getattr(s, "ott_providers", None),
     )
 
 
@@ -74,6 +76,7 @@ def movie_to_movie_response(m: Movie) -> MovieResponse:
         release_year=m.release_year,
         poster_image_url=m.poster_image_url,
         genre=m.genre,
+        genre_percentages=m.genre_percentages,
         language=m.language,
         director_id=m.director_id,
         director=m.director,
@@ -81,6 +84,7 @@ def movie_to_movie_response(m: Movie) -> MovieResponse:
         total_seasons=None,
         ott_url=getattr(m, "ott_url", None),
         ott_platform=getattr(m, "ott_platform", None),
+        ott_providers=getattr(m, "ott_providers", None),
     )
 
 
@@ -598,111 +602,39 @@ def get_category_movies(
 
 
 @router.post("/mood-recommendation", response_model=MoodResponse, summary="Get AI Movie Recommendations based on User Mood")
-def get_mood_recommendation(payload: MoodRequest, db: Session = Depends(get_db)):
+def get_mood_recommendation(
+    payload: MoodRequest,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: Session = Depends(get_db)
+):
     mood = payload.mood.strip()
     if not mood:
         raise HTTPException(status_code=400, detail="Mood query cannot be empty")
 
-    normalized_type = (payload.content_type or "all").lower().strip()
-    include_movies = normalized_type in ("all", "movie")
-    include_series = normalized_type in ("all", "web_series", "series", "tv")
+    from app.schemas.recommendations import RecommendationRequest
+    from app.services.recommendation_service import get_ai_recommendations
 
-    movies_raw = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
-    series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
-    all_items: List[MovieResponse] = (
-        [movie_to_movie_response(m) for m in movies_raw] +
-        [series_to_movie_response(s) for s in series_raw]
-    )
-    if not all_items:
-        raise HTTPException(status_code=404, detail="No titles available in database")
-
-    # Format compact catalog representation for LLM context
-    catalog = [
-        {
-            "id": m.id,
-            "title": m.title,
-            "type": m.content_type,
-            "year": m.release_year,
-            "rating": m.average_rating,
-            "director": m.director.name if m.director else None,
-            "description": m.description[:200] if m.description else ""
-        }
-        for m in all_items
-    ]
-
-    system_prompt = (
-        "You are an expert AI movie and TV show recommendation engine for PrimeFlix. "
-        "Analyze the user's current mood or situation description and pick the best matching title IDs from the provided catalog.\n\n"
-        "Catalog:\n"
-        f"{json.dumps(catalog, indent=2)}\n\n"
-        "INSTRUCTIONS:\n"
-        "1. Select between 1 to 5 title IDs from the catalog above that best match the user's mood.\n"
-        "2. Provide a short, captivating 2-sentence explanation of why these titles fit the mood.\n"
-        "3. You MUST respond with ONLY a valid JSON object in the following format:\n"
-        '{\n  "explanation": "Your explanation here...",\n  "recommended_ids": ["MOV-1", "SER-1396"]\n}'
+    rec_res = get_ai_recommendations(
+        RecommendationRequest(
+            mood=mood,
+            content_type=payload.content_type or "all",
+            include_prequels_sequels=True,
+            limit=6
+        ),
+        current_user,
+        db
     )
 
-    user_prompt = f"User Mood / Query: {mood}"
-
-    recommended_movies = []
-    explanation = "Here are top entertainment recommendations tailored for your mood."
-
-    # Call Gemini REST API using httpx
-    if settings.GEMINI_API_KEY:
-        try:
-            # Using Gemini v1beta endpoint
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.GEMINI_API_KEY}"
-            request_body = {
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": f"{system_prompt}\n\n{user_prompt}"}
-                        ]
-                    }
-                ],
-                "generationConfig": {
-                    "temperature": 0.7,
-                    "response_mime_type": "application/json"
-                }
-            }
-
-            with httpx.Client(timeout=15.0) as client:
-                res = client.post(gemini_url, json=request_body)
-                if res.status_code == 200:
-                    res_json = res.json()
-                    candidates = res_json.get("candidates", [])
-                    if candidates:
-                        text_response = candidates[0]["content"]["parts"][0]["text"]
-                        parsed_ai = json.loads(text_response)
-                        explanation = parsed_ai.get("explanation", explanation)
-                        rec_ids = parsed_ai.get("recommended_ids", [])
-                        
-                        id_map = {m.id: m for m in all_items}
-                        for r_id in rec_ids:
-                            if r_id in id_map:
-                                recommended_movies.append(id_map[r_id])
-                else:
-                    logger.error(f"Gemini API returned status {res.status_code}: {res.text}")
-        except Exception as e:
-            logger.error(f"Error invoking Gemini API: {e}")
-
-    # Fallback if AI didn't return matches or API key wasn't available
-    if not recommended_movies:
-        # Simple keyword matching fallback
-        words = mood.lower().split()
-        matched = []
-        for m in all_items:
-            text = f"{m.title} {m.description or ''}".lower()
-            if any(w in text for w in words if len(w) > 3):
-                matched.append(m)
-        recommended_movies = matched[:4] if matched else all_items[:4]
-        explanation = f"Based on your mood query '{mood}', here are titles you might enjoy!"
+    movies = [p.content for p in rec_res.personalized_for_you]
+    if not movies and rec_res.mood_and_genre_picks:
+        movies = [p.content for p in rec_res.mood_and_genre_picks]
 
     return MoodResponse(
         mood=mood,
-        explanation=explanation,
-        movies=recommended_movies
+        explanation=rec_res.ai_explanation,
+        movies=movies[:6]
     )
+
 
 
 def build_universe_response(

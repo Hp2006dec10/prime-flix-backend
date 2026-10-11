@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models import Director, Movie, WebSeries, Season, Episode
+from app.services.genre_service import analyze_story_lexical
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,8 @@ def ingest_movie_by_tmdb_id(db: Session, tmdb_id: int) -> Movie:
         ott_url = watch_info.get("ott_url") or tmdb_data.get("homepage") or None
         ott_platform = watch_info.get("ott_platform")
 
+        genre_percentages = analyze_story_lexical(title, description, genre)
+
         movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         if not movie and imdb_id:
             movie = db.query(Movie).filter(Movie.imdb_id == imdb_id).first()
@@ -202,6 +205,7 @@ def ingest_movie_by_tmdb_id(db: Session, tmdb_id: int) -> Movie:
             movie.release_year = release_year
             movie.poster_image_url = poster_image_url
             movie.genre = genre
+            movie.genre_percentages = genre_percentages
             movie.language = language
             if director_obj:
                 movie.director_id = director_obj.id
@@ -221,6 +225,7 @@ def ingest_movie_by_tmdb_id(db: Session, tmdb_id: int) -> Movie:
                 release_year=release_year,
                 poster_image_url=poster_image_url,
                 genre=genre,
+                genre_percentages=genre_percentages,
                 language=language,
                 director_id=director_obj.id if director_obj else None,
                 ott_url=ott_url,
@@ -324,6 +329,8 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
         ott_platform = watch_info.get("ott_platform")
 
         series_id = f"SER-{tmdb_id}"
+        genre_percentages = analyze_story_lexical(title, description, genre)
+
         series = db.query(WebSeries).filter(WebSeries.series_id == series_id).first()
         if not series and imdb_id:
             series = db.query(WebSeries).filter(WebSeries.imdb_id == imdb_id).first()
@@ -336,6 +343,7 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
             series.total_seasons = total_seasons
             series.poster_image_url = poster_image_url
             series.genre = genre
+            series.genre_percentages = genre_percentages
             series.language = language
             if director_obj:
                 series.director_id = director_obj.id
@@ -355,6 +363,7 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
                 total_seasons=total_seasons,
                 poster_image_url=poster_image_url,
                 genre=genre,
+                genre_percentages=genre_percentages,
                 language=language,
                 director_id=director_obj.id if director_obj else None,
                 ott_url=ott_url,

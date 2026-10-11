@@ -24,7 +24,11 @@ def init_db():
     with engine.begin() as conn:
         try:
             conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre VARCHAR(255);"))
+            conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre_percentages JSON;"))
             conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS language VARCHAR(100);"))
+            conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS ott_providers JSON;"))
+            conn.execute(text("ALTER TABLE webseries ADD COLUMN IF NOT EXISTS genre_percentages JSON;"))
+            conn.execute(text("ALTER TABLE webseries ADD COLUMN IF NOT EXISTS ott_providers JSON;"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user';"))
         except Exception as e:
             logger.warning(f"Could not auto-add DB columns: {e}")
