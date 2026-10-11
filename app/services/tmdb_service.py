@@ -1,6 +1,7 @@
 import re
 import logging
 import httpx
+import concurrent.futures
 from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 
@@ -371,11 +372,37 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
         if not canonical_seasons:
             canonical_seasons = raw_seasons
 
-        for s_meta in canonical_seasons:
+        print(f"    --> [TMDB] Fetching {len(canonical_seasons)} seasons in parallel for '{title}'...", flush=True)
+
+        def fetch_season_details_task(s_meta):
+            s_num = s_meta.get("season_number", 1)
+            try:
+                s_det = fetch_tmdb_season_details(client, tmdb_id, s_num)
+                return (s_meta, s_det)
+            except Exception as ex:
+                logger.warning(f"Error fetching season {s_num} for TMDB {tmdb_id}: {ex}")
+                return (s_meta, None)
+
+        max_workers = min(len(canonical_seasons), 8) or 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            fetched_seasons = list(executor.map(fetch_season_details_task, canonical_seasons))
+
+        # Bulk load existing seasons for this series to eliminate N+1 queries
+        existing_seasons = {
+            s.season_id: s for s in db.query(Season).filter(Season.series_id == series_id).all()
+        }
+
+        # Bulk load existing episodes for all seasons in this series
+        target_season_ids = [f"SEAS-{tmdb_id}-{s_m.get('season_number', 1)}" for s_m, _ in fetched_seasons]
+        existing_episodes = {
+            ep.episode_id: ep for ep in db.query(Episode).filter(Episode.season_id.in_(target_season_ids)).all()
+        }
+
+        total_episodes_saved = 0
+        for s_meta, s_detail in fetched_seasons:
             season_num = s_meta.get("season_number", 1)
             season_id = f"SEAS-{tmdb_id}-{season_num}"
 
-            s_detail = fetch_tmdb_season_details(client, tmdb_id, season_num)
             if not s_detail:
                 continue
 
@@ -386,7 +413,7 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
             episodes_list = s_detail.get("episodes", [])
             ep_count = len(episodes_list)
 
-            season = db.query(Season).filter(Season.season_id == season_id).first()
+            season = existing_seasons.get(season_id)
             if season:
                 season.season_number = season_num
                 season.release_year = s_year
@@ -407,8 +434,7 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
                     tmdb_id=s_detail.get("id"),
                 )
                 db.add(season)
-
-            db.commit()
+                existing_seasons[season_id] = season
 
             # Episodes
             for ep_data in episodes_list:
@@ -423,7 +449,7 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
                 ep_air = ep_data.get("air_date")
                 ep_tmdb = ep_data.get("id")
 
-                episode = db.query(Episode).filter(Episode.episode_id == ep_id).first()
+                episode = existing_episodes.get(ep_id)
                 if episode:
                     episode.title = ep_title
                     episode.duration = ep_runtime
@@ -445,8 +471,10 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
                         tmdb_id=ep_tmdb,
                     )
                     db.add(episode)
+                    existing_episodes[ep_id] = episode
+                total_episodes_saved += 1
 
-            db.commit()
-
+        db.commit()
+        print(f"    --> [TMDB] Saved {len(fetched_seasons)} seasons and {total_episodes_saved} episodes for '{title}'.", flush=True)
         db.refresh(series)
         return series

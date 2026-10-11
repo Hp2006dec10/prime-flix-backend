@@ -1079,9 +1079,11 @@ def ingest_from_tmdb(
     db: Session = Depends(get_db)
 ):
     c_type = (req.content_type or "movie").lower().strip()
+    print(f"\n[Single Ingest] Starting ingestion for TMDB ID {req.tmdb_id} as '{c_type}' (Requested by {current_user.email})", flush=True)
     try:
         if c_type in ("web_series", "tv", "series"):
             series = ingest_series_by_tmdb_id(db, req.tmdb_id)
+            print(f"[Single Ingest] [SUCCESS] TV Series '{series.title}' ({series.total_seasons} seasons) ingested!", flush=True)
             return IngestTmdbResponse(
                 message=f"TV Series '{series.title}' ({series.total_seasons} seasons) successfully ingested!",
                 content_id=series.series_id,
@@ -1092,6 +1094,7 @@ def ingest_from_tmdb(
             )
         else:
             movie = ingest_movie_by_tmdb_id(db, req.tmdb_id)
+            print(f"[Single Ingest] [SUCCESS] Movie '{movie.title}' ingested!", flush=True)
             return IngestTmdbResponse(
                 message=f"Movie '{movie.title}' successfully ingested!",
                 content_id=movie.id,
@@ -1101,9 +1104,11 @@ def ingest_from_tmdb(
                 movie=movie_to_movie_response(movie)
             )
     except ValueError as ve:
+        print(f"[Single Ingest] [FAIL] Bad request: {ve}", flush=True)
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"Error ingesting TMDB ID {req.tmdb_id}: {e}")
+        print(f"[Single Ingest] [ERROR] Ingestion failed: {e}", flush=True)
         raise HTTPException(status_code=500, detail=f"Failed to ingest from TMDB: {str(e)}")
 
 
@@ -1113,12 +1118,17 @@ def ingest_from_tmdb_bulk(
     current_user: User = Depends(get_admin_or_owner_user),
     db: Session = Depends(get_db)
 ):
+    print(f"\n=======================================================", flush=True)
+    print(f"[Bulk Ingest] Received batch of {len(req.items)} items from {current_user.email}", flush=True)
+    print(f"=======================================================", flush=True)
+    logger.info(f"Bulk TMDB Ingest Started: {len(req.items)} items requested by {current_user.email}")
     results = []
     success_count = 0
     fail_count = 0
 
-    for item in req.items:
+    for idx, item in enumerate(req.items, start=1):
         c_type = (item.content_type or "movie").lower().strip()
+        print(f"\n[Bulk Ingest {idx}/{len(req.items)}] Processing TMDB ID {item.tmdb_id} (Type: {c_type})...", flush=True)
         try:
             if c_type in ("web_series", "tv", "series"):
                 series = ingest_series_by_tmdb_id(db, item.tmdb_id)
@@ -1131,6 +1141,7 @@ def ingest_from_tmdb_bulk(
                     title=series.title,
                     poster_image_url=series.poster_image_url
                 ))
+                print(f"[Bulk Ingest {idx}/{len(req.items)}] [SUCCESS] TV Series '{series.title}' ingested successfully!", flush=True)
             else:
                 movie = ingest_movie_by_tmdb_id(db, item.tmdb_id)
                 results.append(BulkIngestTmdbResultItem(
@@ -1142,9 +1153,11 @@ def ingest_from_tmdb_bulk(
                     title=movie.title,
                     poster_image_url=movie.poster_image_url
                 ))
+                print(f"[Bulk Ingest {idx}/{len(req.items)}] [SUCCESS] Movie '{movie.title}' ingested successfully!", flush=True)
             success_count += 1
         except Exception as e:
             logger.error(f"Bulk ingestion error for TMDB ID {item.tmdb_id}: {e}")
+            print(f"[Bulk Ingest {idx}/{len(req.items)}] [ERROR] Failed TMDB ID {item.tmdb_id}: {e}", flush=True)
             results.append(BulkIngestTmdbResultItem(
                 tmdb_id=item.tmdb_id,
                 content_type=c_type,
@@ -1153,6 +1166,7 @@ def ingest_from_tmdb_bulk(
             ))
             fail_count += 1
 
+    print(f"\n[Bulk Ingest] Finished batch: {success_count} succeeded, {fail_count} failed.\n", flush=True)
     return BulkIngestTmdbResponse(
         total_requested=len(req.items),
         successful_count=success_count,
