@@ -178,3 +178,21 @@ class Episode(Base):
     season = relationship("Season", back_populates="episodes")
 
 
+class WatchlistItem(Base):
+    __tablename__ = "watchlist_items"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    content_id = Column(String(50), nullable=False, index=True)  # Format e.g. 'MOV-1' or 'SER-1396'
+    content_type = Column(String(50), default="movie", nullable=False)  # 'movie' or 'web_series'
+    status = Column(String(50), default="to_watch", nullable=False)  # 'watching', 'completed', 'to_watch', 'dropped'
+    completed_at = Column(DateTime, nullable=True)
+    rating = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    user = relationship("User", backref="watchlist_items")
+
+

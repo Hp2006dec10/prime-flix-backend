@@ -69,3 +69,30 @@ def get_admin_or_owner_user(
         )
     return current_user
 
+
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+
+def get_optional_current_user(
+    token: str = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_db)
+):
+    """
+    Validates JWT access token if present, returns None if anonymous/guest.
+    """
+    if not token:
+        return None
+    try:
+        import jwt as pyjwt
+        from app.core.config import settings
+        payload = pyjwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        if not payload or payload.get("type") != "access":
+            return None
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+        stmt = select(User).where(User.id == int(user_id))
+        return db.execute(stmt).scalars().first()
+    except Exception:
+        return None
+
