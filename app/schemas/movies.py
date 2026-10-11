@@ -25,6 +25,8 @@ class MovieResponse(BaseModel):
     language: Optional[str] = None
     director_id: Optional[int] = None
     director: Optional[DirectorResponse] = None
+    content_type: Optional[str] = "movie"
+    total_seasons: Optional[int] = None
 
     class Config:
         from_attributes = True

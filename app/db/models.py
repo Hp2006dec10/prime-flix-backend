@@ -59,6 +59,7 @@ class Director(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     movies = relationship("Movie", back_populates="director", cascade="all, delete-orphan")
+    webseries = relationship("WebSeries", back_populates="director")
 
 
 class Movie(Base):
@@ -108,5 +109,68 @@ class UniverseContent(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
 
     universe = relationship("CinematicUniverse", back_populates="contents")
+
+
+class WebSeries(Base):
+    __tablename__ = "webseries"
+
+    series_id = Column(String(50), primary_key=True, index=True)  # Format e.g. 'SER-1', 'SER-1396'
+    tmdb_id = Column(Integer, unique=True, index=True, nullable=True)
+    imdb_id = Column(String(50), unique=True, index=True, nullable=True)
+    title = Column(String(255), nullable=False, index=True)
+    average_rating = Column(Float, nullable=True)
+    description = Column(Text, nullable=True)
+    release_year = Column(Integer, nullable=True)
+    total_seasons = Column(Integer, default=1, nullable=False)
+    poster_image_url = Column(Text, nullable=True)
+    genre = Column(String(255), nullable=True)
+    language = Column(String(100), nullable=True)
+    director_id = Column(Integer, ForeignKey("directors.id", ondelete="SET NULL"), nullable=True)
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    director = relationship("Director", back_populates="webseries")
+    seasons = relationship("Season", back_populates="webseries", cascade="all, delete-orphan", order_by="Season.season_number")
+
+
+class Season(Base):
+    __tablename__ = "seasons"
+
+    season_id = Column(String(50), primary_key=True, index=True)  # Format e.g. 'SEAS-1396-1'
+    series_id = Column(String(50), ForeignKey("webseries.series_id", ondelete="CASCADE"), nullable=False, index=True)
+    season_number = Column(Integer, nullable=False)
+    release_year = Column(Integer, nullable=True)
+    title = Column(String(255), nullable=True)  # e.g. 'Season 1'
+    description = Column(Text, nullable=True)
+    poster_image_url = Column(Text, nullable=True)
+    episode_count = Column(Integer, nullable=True)
+    tmdb_id = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    webseries = relationship("WebSeries", back_populates="seasons")
+    episodes = relationship("Episode", back_populates="season", cascade="all, delete-orphan", order_by="Episode.episode_number")
+
+
+class Episode(Base):
+    __tablename__ = "episodes"
+
+    episode_id = Column(String(50), primary_key=True, index=True)  # Format e.g. 'EP-1396-1-1'
+    season_id = Column(String(50), ForeignKey("seasons.season_id", ondelete="CASCADE"), nullable=False, index=True)
+    episode_number = Column(Integer, nullable=False)
+    title = Column(String(255), nullable=False)
+    duration = Column(Integer, nullable=True)  # in minutes
+    description = Column(Text, nullable=True)
+    still_image_url = Column(Text, nullable=True)
+    average_rating = Column(Float, nullable=True)
+    release_date = Column(String(50), nullable=True)
+    tmdb_id = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    season = relationship("Season", back_populates="episodes")
 
 
