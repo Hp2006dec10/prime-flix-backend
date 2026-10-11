@@ -21,8 +21,18 @@ from app.schemas.movies import (
     UniverseContentResponse,
     CreateCinematicUniverseRequest,
     AddUniverseContentRequest,
-    BulkAddUniverseContentRequest
+    BulkAddUniverseContentRequest,
+    UnifiedSearchResponse,
+    IngestTmdbRequest,
+    IngestTmdbResponse,
+    BulkIngestTmdbRequest,
+    BulkIngestTmdbResponse,
+    BulkIngestTmdbResultItem,
+    UpdateCinematicUniverseRequest,
+    ReorderUniverseContentsRequest,
+    UpdateOttUrlRequest
 )
+from app.services.tmdb_service import ingest_movie_by_tmdb_id, ingest_series_by_tmdb_id
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -47,6 +57,8 @@ def series_to_movie_response(s: WebSeries) -> MovieResponse:
         director=s.director,
         content_type="web_series",
         total_seasons=s.total_seasons,
+        ott_url=getattr(s, "ott_url", None),
+        ott_platform=getattr(s, "ott_platform", None),
     )
 
 
@@ -67,6 +79,8 @@ def movie_to_movie_response(m: Movie) -> MovieResponse:
         director=m.director,
         content_type="movie",
         total_seasons=None,
+        ott_url=getattr(m, "ott_url", None),
+        ott_platform=getattr(m, "ott_platform", None),
     )
 
 
@@ -745,6 +759,123 @@ def build_universe_response(
     )
 
 
+@router.get("/unified-search", response_model=UnifiedSearchResponse, summary="Search Movies, TV Series, and Cinematic Universes grouped by type")
+def unified_search(
+    query: Optional[str] = None,
+    genre: Optional[str] = None,
+    language: Optional[str] = None,
+    release_year: Optional[int] = None,
+    director_id: Optional[int] = None,
+    content_type: Optional[str] = None,  # 'all', 'movie', 'web_series', 'universe'
+    db: Session = Depends(get_db)
+):
+    normalized_type = (content_type or "all").lower().strip()
+    include_movies = normalized_type in ("all", "movie", "movies")
+    include_series = normalized_type in ("all", "web_series", "series", "tv", "shows")
+    include_universes = normalized_type in ("all", "universe", "universes")
+
+    movies_res: List[MovieResponse] = []
+    series_res: List[MovieResponse] = []
+    universes_res: List[CinematicUniverseResponse] = []
+
+    # 1. Movies
+    if include_movies:
+        q_m = db.query(Movie).options(joinedload(Movie.director))
+        if director_id and director_id > 0:
+            q_m = q_m.filter(Movie.director_id == director_id)
+        if genre and genre.upper() != "ALL":
+            q_m = q_m.filter(Movie.genre.ilike(f"%{genre}%"))
+        if language and language.upper() != "ALL":
+            q_m = q_m.filter(Movie.language.ilike(f"%{language}%"))
+        if release_year and release_year > 0:
+            q_m = q_m.filter(Movie.release_year == release_year)
+        if query and query.strip():
+            s = query.strip().lower()
+            q_m = q_m.filter(
+                or_(
+                    Movie.title.ilike(f"%{s}%"),
+                    Movie.description.ilike(f"%{s}%"),
+                    Movie.genre.ilike(f"%{s}%")
+                )
+            )
+        movies_res = [movie_to_movie_response(m) for m in q_m.all()]
+        movies_res.sort(
+            key=lambda x: (x.average_rating if x.average_rating is not None else 0, x.release_year if x.release_year is not None else 0),
+            reverse=True
+        )
+
+    # 2. TV Series & Web Series
+    if include_series:
+        q_s = db.query(WebSeries).options(joinedload(WebSeries.director))
+        if director_id and director_id > 0:
+            q_s = q_s.filter(WebSeries.director_id == director_id)
+        if genre and genre.upper() != "ALL":
+            q_s = q_s.filter(WebSeries.genre.ilike(f"%{genre}%"))
+        if language and language.upper() != "ALL":
+            q_s = q_s.filter(WebSeries.language.ilike(f"%{language}%"))
+        if release_year and release_year > 0:
+            q_s = q_s.filter(WebSeries.release_year == release_year)
+        if query and query.strip():
+            s = query.strip().lower()
+            q_s = q_s.filter(
+                or_(
+                    WebSeries.title.ilike(f"%{s}%"),
+                    WebSeries.description.ilike(f"%{s}%"),
+                    WebSeries.genre.ilike(f"%{s}%")
+                )
+            )
+        series_res = [series_to_movie_response(s) for s in q_s.all()]
+        series_res.sort(
+            key=lambda x: (x.average_rating if x.average_rating is not None else 0, x.release_year if x.release_year is not None else 0),
+            reverse=True
+        )
+
+    # 3. Cinematic Universes
+    if include_universes:
+        all_universes = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).all()
+        for u in all_universes:
+            u_res = build_universe_response(u, db)
+            matches = True
+            if query and query.strip():
+                s = query.strip().lower()
+                name_match = s in u.name.lower() or (u.description and s in u.description.lower())
+                item_match = any((c.movie and s in c.movie.title.lower()) for c in u_res.contents)
+                if not (name_match or item_match):
+                    matches = False
+
+            if genre and genre.upper() != "ALL" and matches:
+                genre_match = any((c.movie and c.movie.genre and genre.lower() in c.movie.genre.lower()) for c in u_res.contents)
+                if not genre_match:
+                    matches = False
+
+            if language and language.upper() != "ALL" and matches:
+                lang_match = any((c.movie and c.movie.language and language.lower() in c.movie.language.lower()) for c in u_res.contents)
+                if not lang_match:
+                    matches = False
+
+            if release_year and release_year > 0 and matches:
+                year_match = any((c.movie and c.movie.release_year == release_year) for c in u_res.contents)
+                if not year_match:
+                    matches = False
+
+            if director_id and director_id > 0 and matches:
+                dir_match = any((c.movie and c.movie.director_id == director_id) for c in u_res.contents)
+                if not dir_match:
+                    matches = False
+
+            if matches:
+                universes_res.append(u_res)
+
+    total = len(movies_res) + len(series_res) + len(universes_res)
+
+    return UnifiedSearchResponse(
+        movies=movies_res,
+        series=series_res,
+        universes=universes_res,
+        total_count=total
+    )
+
+
 @router.get("/universes/all", response_model=List[CinematicUniverseResponse], summary="Get All Cinematic Universes")
 def get_cinematic_universes(
     limit: Optional[int] = 10,
@@ -939,6 +1070,211 @@ def delete_cinematic_universe(
     db.delete(universe)
     db.commit()
     return {"message": "Cinematic Universe deleted successfully"}
+
+
+@router.post("/ingest-tmdb", response_model=IngestTmdbResponse, summary="Ingest Movie or TV Series by TMDB ID (Admin/Owner only)")
+def ingest_from_tmdb(
+    req: IngestTmdbRequest,
+    current_user: User = Depends(get_admin_or_owner_user),
+    db: Session = Depends(get_db)
+):
+    c_type = (req.content_type or "movie").lower().strip()
+    try:
+        if c_type in ("web_series", "tv", "series"):
+            series = ingest_series_by_tmdb_id(db, req.tmdb_id)
+            return IngestTmdbResponse(
+                message=f"TV Series '{series.title}' ({series.total_seasons} seasons) successfully ingested!",
+                content_id=series.series_id,
+                content_type="web_series",
+                title=series.title,
+                poster_image_url=series.poster_image_url,
+                movie=series_to_movie_response(series)
+            )
+        else:
+            movie = ingest_movie_by_tmdb_id(db, req.tmdb_id)
+            return IngestTmdbResponse(
+                message=f"Movie '{movie.title}' successfully ingested!",
+                content_id=movie.id,
+                content_type="movie",
+                title=movie.title,
+                poster_image_url=movie.poster_image_url,
+                movie=movie_to_movie_response(movie)
+            )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error ingesting TMDB ID {req.tmdb_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to ingest from TMDB: {str(e)}")
+
+
+@router.post("/ingest-tmdb-bulk", response_model=BulkIngestTmdbResponse, summary="Bulk Ingest Multiple Movies and/or Series by TMDB IDs (Admin/Owner only)")
+def ingest_from_tmdb_bulk(
+    req: BulkIngestTmdbRequest,
+    current_user: User = Depends(get_admin_or_owner_user),
+    db: Session = Depends(get_db)
+):
+    results = []
+    success_count = 0
+    fail_count = 0
+
+    for item in req.items:
+        c_type = (item.content_type or "movie").lower().strip()
+        try:
+            if c_type in ("web_series", "tv", "series"):
+                series = ingest_series_by_tmdb_id(db, item.tmdb_id)
+                results.append(BulkIngestTmdbResultItem(
+                    tmdb_id=item.tmdb_id,
+                    content_type="web_series",
+                    status="success",
+                    message=f"TV Series '{series.title}' ({series.total_seasons} seasons) successfully ingested!",
+                    content_id=series.series_id,
+                    title=series.title,
+                    poster_image_url=series.poster_image_url
+                ))
+            else:
+                movie = ingest_movie_by_tmdb_id(db, item.tmdb_id)
+                results.append(BulkIngestTmdbResultItem(
+                    tmdb_id=item.tmdb_id,
+                    content_type="movie",
+                    status="success",
+                    message=f"Movie '{movie.title}' successfully ingested!",
+                    content_id=movie.id,
+                    title=movie.title,
+                    poster_image_url=movie.poster_image_url
+                ))
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Bulk ingestion error for TMDB ID {item.tmdb_id}: {e}")
+            results.append(BulkIngestTmdbResultItem(
+                tmdb_id=item.tmdb_id,
+                content_type=c_type,
+                status="error",
+                message=str(e)
+            ))
+            fail_count += 1
+
+    return BulkIngestTmdbResponse(
+        total_requested=len(req.items),
+        successful_count=success_count,
+        failed_count=fail_count,
+        results=results
+    )
+
+
+@router.put("/universes/{universe_id}", response_model=CinematicUniverseResponse, summary="Update Universe Name and Description (Admin/Owner only)")
+def update_cinematic_universe(
+    universe_id: int,
+    req: UpdateCinematicUniverseRequest,
+    current_user: User = Depends(get_admin_or_owner_user),
+    db: Session = Depends(get_db)
+):
+    universe = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).filter(CinematicUniverse.id == universe_id).first()
+    if not universe:
+        raise HTTPException(status_code=404, detail="Cinematic Universe not found")
+
+    if req.name is not None and req.name.strip():
+        name_clean = req.name.strip()
+        existing = db.query(CinematicUniverse).filter(
+            CinematicUniverse.name.ilike(name_clean),
+            CinematicUniverse.id != universe_id
+        ).first()
+        if existing:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Another Cinematic Universe already has this name.")
+        universe.name = name_clean
+
+    if req.description is not None:
+        universe.description = req.description.strip() if req.description else None
+
+    db.commit()
+    universe = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).filter(CinematicUniverse.id == universe_id).first()
+    return build_universe_response(universe, db)
+
+
+@router.put("/universes/{universe_id}/contents/reorder", response_model=CinematicUniverseResponse, summary="Reorder Contents in Cinematic Universe (Admin/Owner only)")
+def reorder_universe_contents(
+    universe_id: int,
+    req: ReorderUniverseContentsRequest,
+    current_user: User = Depends(get_admin_or_owner_user),
+    db: Session = Depends(get_db)
+):
+    universe = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).filter(CinematicUniverse.id == universe_id).first()
+    if not universe:
+        raise HTTPException(status_code=404, detail="Cinematic Universe not found")
+
+    content_map = {c.content_id: c for c in universe.contents}
+    for idx, cid in enumerate(req.content_ids):
+        item = content_map.get(cid)
+        if item:
+            item.order_in_universe = idx + 1
+
+    db.commit()
+    universe = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).filter(CinematicUniverse.id == universe_id).first()
+    return build_universe_response(universe, db)
+
+
+@router.patch("/{content_id}/ott-url", response_model=MovieResponse, summary="Set or Update OTT streaming URL for Movie or Series (Admin/Owner only)")
+def update_content_ott_url(
+    content_id: str,
+    req: UpdateOttUrlRequest,
+    current_user: User = Depends(get_admin_or_owner_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Sets or updates the direct OTT streaming URL (e.g. Netflix, Prime Video, Disney+)
+    and platform name for a movie or TV show.
+    """
+    clean_id = content_id.strip()
+    clean_url = req.ott_url.strip() if req.ott_url else None
+    clean_platform = req.ott_platform.strip() if req.ott_platform else None
+
+    # Check Movie first
+    movie = db.query(Movie).options(joinedload(Movie.director)).filter(Movie.id == clean_id).first()
+    if movie:
+        movie.ott_url = clean_url
+        movie.ott_platform = clean_platform
+        db.commit()
+        db.refresh(movie)
+        return movie_to_movie_response(movie)
+
+    # Check WebSeries
+    series = db.query(WebSeries).options(joinedload(WebSeries.director)).filter(WebSeries.series_id == clean_id).first()
+    if series:
+        series.ott_url = clean_url
+        series.ott_platform = clean_platform
+        db.commit()
+        db.refresh(series)
+        return series_to_movie_response(series)
+
+    raise HTTPException(status_code=404, detail=f"Title with ID '{clean_id}' not found.")
+
+
+@router.get("/{content_id}/ott-url", summary="Get OTT streaming URL and platform for a Movie or Series")
+def get_content_ott_url(
+    content_id: str,
+    db: Session = Depends(get_db)
+):
+    clean_id = content_id.strip()
+    movie = db.query(Movie).filter(Movie.id == clean_id).first()
+    if movie:
+        return {
+            "content_id": movie.id,
+            "title": movie.title,
+            "content_type": "movie",
+            "ott_url": movie.ott_url,
+            "ott_platform": movie.ott_platform
+        }
+
+    series = db.query(WebSeries).filter(WebSeries.series_id == clean_id).first()
+    if series:
+        return {
+            "content_id": series.series_id,
+            "title": series.title,
+            "content_type": "web_series",
+            "ott_url": series.ott_url,
+            "ott_platform": series.ott_platform
+        }
+
+    raise HTTPException(status_code=404, detail=f"Title with ID '{clean_id}' not found.")
 
 
 @router.get("/{movie_id}", response_model=MovieResponse, summary="Get Single Movie Details")

@@ -77,6 +77,8 @@ class Movie(Base):
     genre = Column(String(255), nullable=True)
     language = Column(String(100), nullable=True)
     director_id = Column(Integer, ForeignKey("directors.id", ondelete="SET NULL"), nullable=True)
+    ott_url = Column(Text, nullable=True)
+    ott_platform = Column(String(100), nullable=True)
 
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
@@ -126,6 +128,8 @@ class WebSeries(Base):
     genre = Column(String(255), nullable=True)
     language = Column(String(100), nullable=True)
     director_id = Column(Integer, ForeignKey("directors.id", ondelete="SET NULL"), nullable=True)
+    ott_url = Column(Text, nullable=True)
+    ott_platform = Column(String(100), nullable=True)
 
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)

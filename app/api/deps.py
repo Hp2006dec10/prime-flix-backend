@@ -21,7 +21,19 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     
-    payload = decode_token(token)
+    try:
+        import jwt as pyjwt
+        from app.core.config import settings
+        payload = pyjwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has expired. Please refresh your token or log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except pyjwt.PyJWTError:
+        raise credentials_exception
+    
     if not payload or payload.get("type") != "access":
         raise credentials_exception
     
