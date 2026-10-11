@@ -34,6 +34,7 @@ class MovieResponse(BaseModel):
 
 class MoodRequest(BaseModel):
     mood: str
+    content_type: Optional[str] = None
 
 
 class MoodResponse(BaseModel):

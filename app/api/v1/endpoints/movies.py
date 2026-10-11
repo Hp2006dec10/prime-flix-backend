@@ -77,13 +77,18 @@ def get_all_movies(db: Session = Depends(get_db)):
 
 
 @router.get("/filter-options", response_model=FilterOptionsResponse, summary="Get Filter Options for Genre, Language, Years & Directors across Movies and TV Shows")
-def get_filter_options(db: Session = Depends(get_db)):
-    movies = db.query(Movie).options(joinedload(Movie.director)).all()
-    series = db.query(WebSeries).options(joinedload(WebSeries.director)).all()
+def get_filter_options(content_type: Optional[str] = None, db: Session = Depends(get_db)):
+    normalized_type = (content_type or "all").lower().strip()
+    include_movies = normalized_type in ("all", "movie")
+    include_series = normalized_type in ("all", "web_series", "series", "tv")
+
+    movies = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
+    series = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
     
     genres_set = set()
     languages_set = set()
     years_set = set()
+    director_ids_set = set()
     
     for item in list(movies) + list(series):
         if item.genre:
@@ -98,8 +103,13 @@ def get_filter_options(db: Session = Depends(get_db)):
                     languages_set.add(l_clean)
         if item.release_year:
             years_set.add(item.release_year)
+        if item.director_id:
+            director_ids_set.add(item.director_id)
                     
-    directors = db.query(Director).order_by(Director.name).all()
+    if director_ids_set:
+        directors = db.query(Director).filter(Director.id.in_(director_ids_set)).order_by(Director.name).all()
+    else:
+        directors = db.query(Director).order_by(Director.name).all()
     
     return FilterOptionsResponse(
         genres=sorted(list(genres_set)),
@@ -208,9 +218,13 @@ def filter_category_list(
 
 
 @router.get("/categories", response_model=List[MovieCategorySection], summary="Get Categorized Movie & Series Collections")
-def get_movie_categories(db: Session = Depends(get_db)):
-    movies_raw = db.query(Movie).options(joinedload(Movie.director)).all()
-    series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all()
+def get_movie_categories(content_type: Optional[str] = None, db: Session = Depends(get_db)):
+    normalized_type = (content_type or "all").lower().strip()
+    include_movies = normalized_type in ("all", "movie")
+    include_series = normalized_type in ("all", "web_series", "series", "tv")
+
+    movies_raw = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
+    series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
 
     all_items: List[MovieResponse] = (
         [movie_to_movie_response(m) for m in movies_raw] +
@@ -222,6 +236,179 @@ def get_movie_categories(db: Session = Depends(get_db)):
 
     sections = []
 
+    # Dedicated TV Shows & Web Series collections
+    if include_series and not include_movies:
+        series_items = [series_to_movie_response(s) for s in series_raw]
+        series_items.sort(key=lambda x: x.average_rating or 0, reverse=True)
+
+        if series_items:
+            sections.append(
+                MovieCategorySection(
+                    title="🔥 Trending & Binge-Worthy Web Series",
+                    description="Acclaimed multi-season dramas, thrillers, and award-winning television series",
+                    category_type="trending_series",
+                    has_more=len(series_items) > 5,
+                    movies=series_items[:5]
+                )
+            )
+
+        top_rated_series = [s for s in series_items if s.average_rating and s.average_rating >= 8.5]
+        if top_rated_series:
+            sections.append(
+                MovieCategorySection(
+                    title="⭐ All-Time Top Rated Series",
+                    description="Highest rated critically acclaimed television masterpieces and miniseries",
+                    category_type="top_rated",
+                    has_more=len(top_rated_series) > 5,
+                    movies=top_rated_series[:5]
+                )
+            )
+
+        all_series_genres = set()
+        for s in series_items:
+            if s.genre:
+                for g in s.genre.split(","):
+                    if g.strip():
+                        all_series_genres.add(g.strip())
+        if all_series_genres:
+            selected_genre = random.choice(sorted(list(all_series_genres)))
+            genre_items = filter_category_list(series_items, "random_genre", genre_name=selected_genre)
+            if genre_items:
+                sections.append(
+                    MovieCategorySection(
+                        title=f"📺 Series Spotlight: {selected_genre}",
+                        description=f"Curated selection of top {selected_genre} web series to stream",
+                        category_type="random_genre",
+                        genre_name=selected_genre,
+                        has_more=len(genre_items) > 5,
+                        movies=genre_items[:5]
+                    )
+                )
+
+        all_series_years = list(set([s.release_year for s in series_items if s.release_year]))
+        if all_series_years:
+            selected_year = random.choice(sorted(all_series_years, reverse=True))
+            year_items = filter_category_list(series_items, "random_year", release_year=selected_year)
+            if year_items:
+                sections.append(
+                    MovieCategorySection(
+                        title=f"📅 Series Time Capsule: Released in {selected_year}",
+                        description=f"Outstanding television series premiered in {selected_year}",
+                        category_type="random_year",
+                        release_year=selected_year,
+                        has_more=len(year_items) > 5,
+                        movies=year_items[:5]
+                    )
+                )
+
+        creators = [s.director.name for s in series_items if s.director and s.director.name]
+        if creators:
+            selected_creator = random.choice(list(set(creators)))
+            creator_items = filter_category_list(series_items, "director", director_name=selected_creator)
+            if creator_items:
+                sections.append(
+                    MovieCategorySection(
+                        title=f"🎥 Showrunner & Director Spotlight: {selected_creator}",
+                        description=f"Iconic series directed or created by {selected_creator}",
+                        category_type="director",
+                        director_name=selected_creator,
+                        has_more=len(creator_items) > 5,
+                        movies=creator_items[:5]
+                    )
+                )
+        return sections
+
+    # Dedicated Movies collections
+    if include_movies and not include_series:
+        movie_items = [movie_to_movie_response(m) for m in movies_raw]
+        movie_items.sort(key=lambda x: (x.average_rating or 0, x.release_year or 0), reverse=True)
+
+        top_rated_movies = filter_category_list(movie_items, "top_rated")
+        if top_rated_movies:
+            sections.append(
+                MovieCategorySection(
+                    title="⭐ All-Time Masterpiece Movies",
+                    description="Highest rated critically acclaimed blockbuster and cinema classics",
+                    category_type="top_rated",
+                    has_more=len(top_rated_movies) > 5,
+                    movies=top_rated_movies[:5]
+                )
+            )
+
+        all_movie_genres = set()
+        for m in movie_items:
+            if m.genre:
+                for g in m.genre.split(","):
+                    if g.strip():
+                        all_movie_genres.add(g.strip())
+        if all_movie_genres:
+            selected_genre = random.choice(sorted(list(all_movie_genres)))
+            genre_items = filter_category_list(movie_items, "random_genre", genre_name=selected_genre)
+            if genre_items:
+                sections.append(
+                    MovieCategorySection(
+                        title=f"🎬 Cinema Spotlight: {selected_genre}",
+                        description=f"Top-rated {selected_genre} feature films in our collection",
+                        category_type="random_genre",
+                        genre_name=selected_genre,
+                        has_more=len(genre_items) > 5,
+                        movies=genre_items[:5]
+                    )
+                )
+
+        all_movie_years = list(set([m.release_year for m in movie_items if m.release_year]))
+        if all_movie_years:
+            selected_year = random.choice(sorted(all_movie_years, reverse=True))
+            year_items = filter_category_list(movie_items, "random_year", release_year=selected_year)
+            if year_items:
+                sections.append(
+                    MovieCategorySection(
+                        title=f"📅 Cinema Time Capsule: Released in {selected_year}",
+                        description=f"Greatest films released in the year {selected_year}",
+                        category_type="random_year",
+                        release_year=selected_year,
+                        has_more=len(year_items) > 5,
+                        movies=year_items[:5]
+                    )
+                )
+
+        directors = [m.director.name for m in movie_items if m.director and m.director.name]
+        if directors:
+            selected_director = random.choice(list(set(directors)))
+            director_items = filter_category_list(movie_items, "director", director_name=selected_director)
+            if director_items:
+                sections.append(
+                    MovieCategorySection(
+                        title=f"🎥 Legendary Director Spotlight: {selected_director}",
+                        description=f"Film masterworks crafted by {selected_director}",
+                        category_type="director",
+                        director_name=selected_director,
+                        has_more=len(director_items) > 5,
+                        movies=director_items[:5]
+                    )
+                )
+
+        universes = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).all()
+        valid_universes = [u for u in universes if u.contents]
+        if valid_universes:
+            selected_universe = random.choice(valid_universes)
+            uni_res = build_universe_response(selected_universe, db)
+            uni_movies = [c.movie for c in uni_res.contents if c.movie and c.movie.content_type == "movie"]
+            if uni_movies:
+                sections.append(
+                    MovieCategorySection(
+                        title=f"🌌 Cinematic Universe: {selected_universe.name}",
+                        description=selected_universe.description or f"Story titles in {selected_universe.name}",
+                        category_type="universe",
+                        universe_name=selected_universe.name,
+                        universe_id=selected_universe.id,
+                        has_more=len(uni_movies) > 5,
+                        movies=uni_movies[:5]
+                    )
+                )
+        return sections
+
+    # Default / Mixed Collections (both Movies & Web Series)
     # 1. Binge-Worthy TV Shows & Web Series Row (if series exist)
     if series_raw:
         series_items = [series_to_movie_response(s) for s in series_raw]
@@ -339,13 +526,24 @@ def get_category_movies(
     director_name: Optional[str] = None,
     universe_id: Optional[int] = None,
     universe_name: Optional[str] = None,
+    content_type: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    normalized_type = (content_type or "all").lower().strip()
+    include_movies = normalized_type in ("all", "movie")
+    include_series = normalized_type in ("all", "web_series", "series", "tv")
+
     if category_type == "universe" and universe_id:
         uni = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).filter(CinematicUniverse.id == universe_id).first()
         if uni:
             uni_res = build_universe_response(uni, db)
-            filtered = [c.movie for c in uni_res.contents if c.movie]
+            filtered = [
+                c.movie for c in uni_res.contents
+                if c.movie and (
+                    normalized_type == "all" or c.movie.content_type == normalized_type or
+                    (normalized_type in ("web_series", "series", "tv") and c.movie.content_type == "web_series")
+                )
+            ]
         else:
             filtered = []
     elif category_type == "trending_series":
@@ -354,8 +552,8 @@ def get_category_movies(
         series_items.sort(key=lambda x: x.average_rating or 0, reverse=True)
         filtered = series_items
     else:
-        movies_raw = db.query(Movie).options(joinedload(Movie.director)).all()
-        series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all()
+        movies_raw = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
+        series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
         all_items = (
             [movie_to_movie_response(m) for m in movies_raw] +
             [series_to_movie_response(s) for s in series_raw]
@@ -391,8 +589,12 @@ def get_mood_recommendation(payload: MoodRequest, db: Session = Depends(get_db))
     if not mood:
         raise HTTPException(status_code=400, detail="Mood query cannot be empty")
 
-    movies_raw = db.query(Movie).options(joinedload(Movie.director)).all()
-    series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all()
+    normalized_type = (payload.content_type or "all").lower().strip()
+    include_movies = normalized_type in ("all", "movie")
+    include_series = normalized_type in ("all", "web_series", "series", "tv")
+
+    movies_raw = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
+    series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
     all_items: List[MovieResponse] = (
         [movie_to_movie_response(m) for m in movies_raw] +
         [series_to_movie_response(s) for s in series_raw]
@@ -742,8 +944,14 @@ def delete_cinematic_universe(
 @router.get("/{movie_id}", response_model=MovieResponse, summary="Get Single Movie Details")
 def get_movie_detail(movie_id: str, db: Session = Depends(get_db)):
     movie = db.query(Movie).options(joinedload(Movie.director)).filter(Movie.id == movie_id).first()
-    if not movie:
-        raise HTTPException(status_code=404, detail="Movie not found")
-    return movie
+    if movie:
+        return movie_to_movie_response(movie)
+    
+    # Fallback to WebSeries if ID matches
+    series = db.query(WebSeries).options(joinedload(WebSeries.director)).filter(WebSeries.series_id == movie_id).first()
+    if series:
+        return series_to_movie_response(series)
+
+    raise HTTPException(status_code=404, detail="Title not found in database")
 
 
