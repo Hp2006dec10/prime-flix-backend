@@ -27,6 +27,8 @@ class MovieResponse(BaseModel):
     director: Optional[DirectorResponse] = None
     content_type: Optional[str] = "movie"
     total_seasons: Optional[int] = None
+    ott_url: Optional[str] = None
+    ott_platform: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -167,3 +169,8 @@ class UpdateCinematicUniverseRequest(BaseModel):
 
 class ReorderUniverseContentsRequest(BaseModel):
     content_ids: List[str]
+
+
+class UpdateOttUrlRequest(BaseModel):
+    ott_url: Optional[str] = None
+    ott_platform: Optional[str] = None

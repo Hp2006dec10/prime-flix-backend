@@ -92,6 +92,36 @@ def fetch_omdb_movie(client: httpx.Client, imdb_id: str) -> Optional[Dict[str, A
     return None
 
 
+def fetch_tmdb_watch_provider(client: httpx.Client, tmdb_id: int, is_tv: bool = False) -> Dict[str, Optional[str]]:
+    """
+    Fetches official OTT streaming link and platform name from TMDB Watch Providers.
+    """
+    endpoint = "tv" if is_tv else "movie"
+    url = f"{TMDB_BASE_URL}/{endpoint}/{tmdb_id}/watch/providers"
+    params = {"api_key": settings.TMDB_API_KEY}
+    ott_url = None
+    ott_platform = None
+
+    try:
+        res = client.get(url, params=params)
+        if res.status_code == 200:
+            data = res.json().get("results", {})
+            # Prefer IN (India) or US, then any available region
+            country_data = data.get("IN") or data.get("US") or (list(data.values())[0] if data else {})
+            if country_data:
+                ott_url = country_data.get("link")
+                flatrate = country_data.get("flatrate", [])
+                buy = country_data.get("buy", [])
+                rent = country_data.get("rent", [])
+                providers = flatrate or buy or rent
+                if providers:
+                    ott_platform = providers[0].get("provider_name")
+    except Exception as e:
+        logger.warning(f"Error fetching watch providers for {endpoint} {tmdb_id}: {e}")
+
+    return {"ott_url": ott_url, "ott_platform": ott_platform}
+
+
 def ingest_movie_by_tmdb_id(db: Session, tmdb_id: int) -> Movie:
     if not settings.TMDB_API_KEY:
         raise ValueError("TMDB_API_KEY is not configured in backend settings.")
@@ -155,6 +185,11 @@ def ingest_movie_by_tmdb_id(db: Session, tmdb_id: int) -> Movie:
         if director_name and director_name != "N/A":
             director_obj = get_or_create_director(db, name=director_name, nationality=director_nationality)
 
+        # Watch providers / OTT link
+        watch_info = fetch_tmdb_watch_provider(client, tmdb_id, is_tv=False)
+        ott_url = watch_info.get("ott_url") or tmdb_data.get("homepage") or None
+        ott_platform = watch_info.get("ott_platform")
+
         movie = db.query(Movie).filter(Movie.tmdb_id == tmdb_id).first()
         if not movie and imdb_id:
             movie = db.query(Movie).filter(Movie.imdb_id == imdb_id).first()
@@ -170,6 +205,10 @@ def ingest_movie_by_tmdb_id(db: Session, tmdb_id: int) -> Movie:
             movie.language = language
             if director_obj:
                 movie.director_id = director_obj.id
+            if not movie.ott_url and ott_url:
+                movie.ott_url = ott_url
+            if not movie.ott_platform and ott_platform:
+                movie.ott_platform = ott_platform
         else:
             movie = Movie(
                 id=f"MOV-{tmdb_id}",
@@ -183,7 +222,9 @@ def ingest_movie_by_tmdb_id(db: Session, tmdb_id: int) -> Movie:
                 poster_image_url=poster_image_url,
                 genre=genre,
                 language=language,
-                director_id=director_obj.id if director_obj else None
+                director_id=director_obj.id if director_obj else None,
+                ott_url=ott_url,
+                ott_platform=ott_platform,
             )
             db.add(movie)
 
@@ -277,6 +318,11 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
         if director_name:
             director_obj = get_or_create_director(db, name=director_name, nationality=director_nationality)
 
+        # Watch providers / OTT link for Series
+        watch_info = fetch_tmdb_watch_provider(client, tmdb_id, is_tv=True)
+        ott_url = watch_info.get("ott_url") or show_data.get("homepage") or None
+        ott_platform = watch_info.get("ott_platform")
+
         series_id = f"SER-{tmdb_id}"
         series = db.query(WebSeries).filter(WebSeries.series_id == series_id).first()
         if not series and imdb_id:
@@ -293,6 +339,10 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
             series.language = language
             if director_obj:
                 series.director_id = director_obj.id
+            if not series.ott_url and ott_url:
+                series.ott_url = ott_url
+            if not series.ott_platform and ott_platform:
+                series.ott_platform = ott_platform
         else:
             series = WebSeries(
                 series_id=series_id,
@@ -307,6 +357,8 @@ def ingest_series_by_tmdb_id(db: Session, tmdb_id: int) -> WebSeries:
                 genre=genre,
                 language=language,
                 director_id=director_obj.id if director_obj else None,
+                ott_url=ott_url,
+                ott_platform=ott_platform,
             )
             db.add(series)
 

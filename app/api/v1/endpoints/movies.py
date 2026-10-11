@@ -29,7 +29,8 @@ from app.schemas.movies import (
     BulkIngestTmdbResponse,
     BulkIngestTmdbResultItem,
     UpdateCinematicUniverseRequest,
-    ReorderUniverseContentsRequest
+    ReorderUniverseContentsRequest,
+    UpdateOttUrlRequest
 )
 from app.services.tmdb_service import ingest_movie_by_tmdb_id, ingest_series_by_tmdb_id
 from app.core.config import settings
@@ -56,6 +57,8 @@ def series_to_movie_response(s: WebSeries) -> MovieResponse:
         director=s.director,
         content_type="web_series",
         total_seasons=s.total_seasons,
+        ott_url=getattr(s, "ott_url", None),
+        ott_platform=getattr(s, "ott_platform", None),
     )
 
 
@@ -76,6 +79,8 @@ def movie_to_movie_response(m: Movie) -> MovieResponse:
         director=m.director,
         content_type="movie",
         total_seasons=None,
+        ott_url=getattr(m, "ott_url", None),
+        ott_platform=getattr(m, "ott_platform", None),
     )
 
 
@@ -1005,11 +1010,77 @@ def reorder_universe_contents(
     return build_universe_response(universe, db)
 
 
+@router.patch("/{content_id}/ott-url", response_model=MovieResponse, summary="Set or Update OTT streaming URL for Movie or Series (Admin/Owner only)")
+def update_content_ott_url(
+    content_id: str,
+    req: UpdateOttUrlRequest,
+    current_user: User = Depends(get_admin_or_owner_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Sets or updates the direct OTT streaming URL (e.g. Netflix, Prime Video, Disney+)
+    and platform name for a movie or TV show.
+    """
+    clean_id = content_id.strip()
+    clean_url = req.ott_url.strip() if req.ott_url else None
+    clean_platform = req.ott_platform.strip() if req.ott_platform else None
+
+    # Check Movie first
+    movie = db.query(Movie).options(joinedload(Movie.director)).filter(Movie.id == clean_id).first()
+    if movie:
+        movie.ott_url = clean_url
+        movie.ott_platform = clean_platform
+        db.commit()
+        db.refresh(movie)
+        return movie_to_movie_response(movie)
+
+    # Check WebSeries
+    series = db.query(WebSeries).options(joinedload(WebSeries.director)).filter(WebSeries.series_id == clean_id).first()
+    if series:
+        series.ott_url = clean_url
+        series.ott_platform = clean_platform
+        db.commit()
+        db.refresh(series)
+        return series_to_movie_response(series)
+
+    raise HTTPException(status_code=404, detail=f"Title with ID '{clean_id}' not found.")
+
+
+@router.get("/{content_id}/ott-url", summary="Get OTT streaming URL and platform for a Movie or Series")
+def get_content_ott_url(
+    content_id: str,
+    db: Session = Depends(get_db)
+):
+    clean_id = content_id.strip()
+    movie = db.query(Movie).filter(Movie.id == clean_id).first()
+    if movie:
+        return {
+            "content_id": movie.id,
+            "title": movie.title,
+            "content_type": "movie",
+            "ott_url": movie.ott_url,
+            "ott_platform": movie.ott_platform
+        }
+
+    series = db.query(WebSeries).filter(WebSeries.series_id == clean_id).first()
+    if series:
+        return {
+            "content_id": series.series_id,
+            "title": series.title,
+            "content_type": "web_series",
+            "ott_url": series.ott_url,
+            "ott_platform": series.ott_platform
+        }
+
+    raise HTTPException(status_code=404, detail=f"Title with ID '{clean_id}' not found.")
+
+
 @router.get("/{movie_id}", response_model=MovieResponse, summary="Get Single Movie Details")
 def get_movie_detail(movie_id: str, db: Session = Depends(get_db)):
     movie = db.query(Movie).options(joinedload(Movie.director)).filter(Movie.id == movie_id).first()
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
-    return movie
+    return movie_to_movie_response(movie)
+
 
 
