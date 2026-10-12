@@ -31,6 +31,9 @@ def init_db():
             conn.execute(text("ALTER TABLE webseries ADD COLUMN IF NOT EXISTS genre_percentages JSON;"))
             conn.execute(text("ALTER TABLE webseries ADD COLUMN IF NOT EXISTS ott_providers JSON;"))
             conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'user';"))
+            conn.execute(text("ALTER TABLE users ALTER COLUMN is_verified DROP NOT NULL;"))
+            conn.execute(text("ALTER TABLE users ALTER COLUMN is_verified SET DEFAULT TRUE;"))
+            conn.execute(text("UPDATE users SET is_active = TRUE;"))
         except Exception as e:
             logger.warning(f"Could not auto-add DB columns: {e}")
     logger.info("Database initialized successfully.")

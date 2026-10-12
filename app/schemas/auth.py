@@ -16,36 +16,9 @@ class UserRegisterRequest(BaseModel):
         return self
 
 
-class VerifyOTPRequest(BaseModel):
-    email: EmailStr
-    otp: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$", examples=["123456"])
-
-
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-
-
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-
-
-class ResetPasswordRequest(BaseModel):
-    email: EmailStr
-    otp: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
-    new_password: str = Field(..., min_length=8)
-    confirm_password: str = Field(...)
-
-    @model_validator(mode="after")
-    def check_passwords_match(self):
-        if self.new_password != self.confirm_password:
-            raise ValueError("Passwords do not match.")
-        return self
-
-
-class ResendOTPRequest(BaseModel):
-    email: EmailStr
-    otp_type: Literal["registration", "forgot_password"] = "registration"
 
 
 class RefreshTokenRequest(BaseModel):
@@ -60,7 +33,6 @@ class UserOut(BaseModel):
     id: int
     full_name: str
     email: str
-    is_verified: bool
     is_active: bool
     role: str = "user"
     created_at: datetime
@@ -83,7 +55,6 @@ class TokenResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
-    otp_active: Optional[bool] = None
 
 
 class PasswordStrengthResponse(BaseModel):

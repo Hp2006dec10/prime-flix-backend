@@ -1,5 +1,4 @@
 import secrets
-import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, Tuple, List
@@ -64,29 +63,6 @@ def validate_password_policy(password: str) -> Tuple[bool, int, List[str]]:
 
     is_valid = len(feedback) == 0
     return is_valid, score, feedback
-
-
-def generate_otp() -> str:
-    """
-    Generates a cryptographically secure 6-digit numeric OTP.
-    """
-    number = secrets.randbelow(1000000)
-    return f"{number:06d}"
-
-
-def hash_otp(otp: str) -> str:
-    """
-    Hashes OTP string using SHA-256 with JWT_SECRET as key to ensure
-    only hashed OTP values are stored in DB.
-    """
-    return hashlib.sha256(f"{otp}:{settings.JWT_SECRET}".encode("utf-8")).hexdigest()
-
-
-def verify_otp(otp: str, hashed_otp: str) -> bool:
-    """
-    Verifies input OTP string against stored hashed OTP.
-    """
-    return secrets.compare_digest(hash_otp(otp), hashed_otp)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:

@@ -76,4 +76,3 @@ Configure the following variables in `.env` or in your deployment dashboard:
 - `TMDB_API_KEY`: The Movie Database API key
 - `OMDB_API_KEY`: Open Movie Database API key
 - `GEMINI_API_KEY`: Google Gemini API key for AI Concierge
-- `SMTP_*`: SMTP credentials for OTP and email notifications
