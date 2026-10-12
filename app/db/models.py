@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Float, Text, JSON
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 
@@ -75,10 +75,12 @@ class Movie(Base):
     release_year = Column(Integer, nullable=True)
     poster_image_url = Column(Text, nullable=True)
     genre = Column(String(255), nullable=True)
+    genre_percentages = Column(JSON, nullable=True)
     language = Column(String(100), nullable=True)
     director_id = Column(Integer, ForeignKey("directors.id", ondelete="SET NULL"), nullable=True)
     ott_url = Column(Text, nullable=True)
     ott_platform = Column(String(100), nullable=True)
+    ott_providers = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
@@ -126,10 +128,12 @@ class WebSeries(Base):
     total_seasons = Column(Integer, default=1, nullable=False)
     poster_image_url = Column(Text, nullable=True)
     genre = Column(String(255), nullable=True)
+    genre_percentages = Column(JSON, nullable=True)
     language = Column(String(100), nullable=True)
     director_id = Column(Integer, ForeignKey("directors.id", ondelete="SET NULL"), nullable=True)
     ott_url = Column(Text, nullable=True)
     ott_platform = Column(String(100), nullable=True)
+    ott_providers = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
@@ -194,5 +198,24 @@ class WatchlistItem(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
     user = relationship("User", backref="watchlist_items")
+
+
+class Review(Base):
+    __tablename__ = "reviews"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    content_id = Column(String(50), nullable=False, index=True)  # Format e.g. 'MOV-1' or 'SER-1396'
+    content_type = Column(String(50), default="movie", nullable=False)  # 'movie' or 'web_series'
+    rating = Column(Float, nullable=False)  # Rating e.g. 8.5 out of 10
+    review_title = Column(String(255), nullable=True)
+    review_text = Column(Text, nullable=True)
+    user_genre_percentages = Column(JSON, nullable=True)  # User's opinion on genre percentages
+
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    user = relationship("User", backref="reviews")
+
 
 

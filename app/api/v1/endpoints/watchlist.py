@@ -41,6 +41,7 @@ def resolve_movie_response(content_id: str, db: Session) -> Optional[MovieRespon
             release_year=m.release_year,
             poster_image_url=m.poster_image_url,
             genre=m.genre,
+            genre_percentages=m.genre_percentages,
             language=m.language,
             director_id=m.director_id,
             director=dir_res,
@@ -48,6 +49,7 @@ def resolve_movie_response(content_id: str, db: Session) -> Optional[MovieRespon
             total_seasons=None,
             ott_url=getattr(m, "ott_url", None),
             ott_platform=getattr(m, "ott_platform", None),
+            ott_providers=getattr(m, "ott_providers", None),
         )
 
     s = db.query(WebSeries).options(joinedload(WebSeries.director)).filter(WebSeries.series_id == cid).first()
@@ -64,6 +66,7 @@ def resolve_movie_response(content_id: str, db: Session) -> Optional[MovieRespon
             release_year=s.release_year,
             poster_image_url=s.poster_image_url,
             genre=s.genre,
+            genre_percentages=s.genre_percentages,
             language=s.language,
             director_id=s.director_id,
             director=dir_res,
@@ -71,6 +74,7 @@ def resolve_movie_response(content_id: str, db: Session) -> Optional[MovieRespon
             total_seasons=s.total_seasons,
             ott_url=getattr(s, "ott_url", None),
             ott_platform=getattr(s, "ott_platform", None),
+            ott_providers=getattr(s, "ott_providers", None),
         )
 
     return None
