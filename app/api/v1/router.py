@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import health, auth, movies, series, watchlist, reviews, recommendations
+from app.api.v1.endpoints import health, auth, movies, series, watchlist, reviews, recommendations, agent
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["Health"])
@@ -9,5 +9,7 @@ api_router.include_router(series.router, prefix="/series", tags=["TV Shows & Web
 api_router.include_router(watchlist.router, prefix="/watchlist", tags=["Watchlist & History"])
 api_router.include_router(reviews.router, prefix="/reviews", tags=["Reviews & Ratings"])
 api_router.include_router(recommendations.router, prefix="/recommendations", tags=["AI Recommendations"])
+api_router.include_router(agent.router, prefix="/agent", tags=["Agentic AI Concierge"])
+
 
 

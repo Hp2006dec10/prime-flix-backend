@@ -218,4 +218,68 @@ class Review(Base):
     user = relationship("User", backref="reviews")
 
 
+class WatchHistory(Base):
+    __tablename__ = "watch_history"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    content_id = Column(String(50), nullable=False, index=True)        # e.g. 'MOV-1' or 'SER-1396'
+    content_type = Column(String(50), default="movie", nullable=False)   # 'movie' or 'web_series'
+    episode_id = Column(String(50), ForeignKey("episodes.episode_id", ondelete="SET NULL"), nullable=True)
+    
+    progress_seconds = Column(Integer, default=0, nullable=False)       # Current watch position
+    duration_seconds = Column(Integer, nullable=True)                  # Total duration in seconds
+    completed = Column(Boolean, default=False, nullable=False)          # True if >= 85% watched
+    completion_rate = Column(Float, default=0.0, nullable=False)        # 0.0 to 1.0
+    
+    watched_at = Column(DateTime, default=utcnow, index=True, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    user = relationship("User", backref="watch_histories")
+
+
+class UserInteraction(Base):
+    __tablename__ = "user_interactions"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    content_id = Column(String(50), nullable=False, index=True)
+    content_type = Column(String(50), default="movie", nullable=False)
+    
+    interaction_type = Column(String(50), nullable=False) # 'like', 'dislike', 'watchlist', 'favorite', 'rating'
+    rating = Column(Float, nullable=True)                 # 1.0 - 10.0 scale
+    
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+    user = relationship("User", backref="interactions")
+
+
+class AgentConversation(Base):
+    __tablename__ = "agent_conversations"
+
+    id = Column(String(50), primary_key=True, index=True)  # uuid or 'conv-...'
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    title = Column(String(255), nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    user = relationship("User", backref="agent_conversations")
+    messages = relationship("AgentMessage", back_populates="conversation", cascade="all, delete-orphan", order_by="AgentMessage.created_at")
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    conversation_id = Column(String(50), ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    sender = Column(String(20), nullable=False)  # 'user', 'agent', 'tool'
+    content = Column(Text, nullable=False)
+    recommended_items = Column(JSON, nullable=True)  # snapshot of recommendations
+    actions_taken = Column(JSON, nullable=True)      # e.g. [{"action": "add_watchlist", "content_id": "MOV-1"}]
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+    conversation = relationship("AgentConversation", back_populates="messages")
+
+
+
 

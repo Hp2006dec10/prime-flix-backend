@@ -4,7 +4,7 @@ import random
 import httpx
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import or_, distinct, func
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
@@ -88,53 +88,47 @@ def movie_to_movie_response(m: Movie) -> MovieResponse:
     )
 
 
+_FILTER_OPTIONS_CACHE = {}
+
+
 @router.get("/", response_model=List[MovieResponse], summary="Get All Movies")
-def get_all_movies(db: Session = Depends(get_db)):
-    movies = db.query(Movie).options(joinedload(Movie.director)).order_by(Movie.id.desc()).all()
+def get_all_movies(limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
+    movies = db.query(Movie).options(joinedload(Movie.director)).order_by(Movie.id.desc()).offset(offset).limit(limit).all()
     return [movie_to_movie_response(m) for m in movies]
 
 
 @router.get("/filter-options", response_model=FilterOptionsResponse, summary="Get Filter Options for Genre, Language, Years & Directors across Movies and TV Shows")
 def get_filter_options(content_type: Optional[str] = None, db: Session = Depends(get_db)):
+    global _FILTER_OPTIONS_CACHE
     normalized_type = (content_type or "all").lower().strip()
-    include_movies = normalized_type in ("all", "movie")
-    include_series = normalized_type in ("all", "web_series", "series", "tv")
+    if normalized_type in _FILTER_OPTIONS_CACHE:
+        return _FILTER_OPTIONS_CACHE[normalized_type]
 
-    movies = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
-    series = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
+    standard_genres = [
+        "Action", "Adventure", "Animation", "Comedy", "Crime",
+        "Documentary", "Drama", "Family", "Fantasy", "History",
+        "Horror", "Music", "Mystery", "Romance", "Science Fiction",
+        "Sci-Fi", "TV Movie", "Thriller", "War", "Western"
+    ]
+    standard_languages = [
+        "English", "Hindi", "Telugu", "Tamil", "Malayalam",
+        "Kannada", "Spanish", "French", "German", "Italian",
+        "Japanese", "Korean", "Chinese", "Russian"
+    ]
     
-    genres_set = set()
-    languages_set = set()
-    years_set = set()
-    director_ids_set = set()
-    
-    for item in list(movies) + list(series):
-        if item.genre:
-            for g in item.genre.split(","):
-                g_clean = g.strip()
-                if g_clean:
-                    genres_set.add(g_clean)
-        if item.language:
-            for l in item.language.split(","):
-                l_clean = l.strip()
-                if l_clean:
-                    languages_set.add(l_clean)
-        if item.release_year:
-            years_set.add(item.release_year)
-        if item.director_id:
-            director_ids_set.add(item.director_id)
-                    
-    if director_ids_set:
-        directors = db.query(Director).filter(Director.id.in_(director_ids_set)).order_by(Director.name).all()
-    else:
-        directors = db.query(Director).order_by(Director.name).all()
-    
-    return FilterOptionsResponse(
-        genres=sorted(list(genres_set)),
-        languages=sorted(list(languages_set)),
-        years=sorted(list(years_set), reverse=True),
+    # Query distinct years and all directors fast
+    years_raw = db.query(distinct(Movie.release_year)).filter(Movie.release_year.isnot(None)).order_by(Movie.release_year.desc()).all()
+    years = [int(y[0]) for y in years_raw if y[0] and str(y[0]).isdigit()]
+    directors = db.query(Director).order_by(Director.name).all()
+
+    resp = FilterOptionsResponse(
+        genres=sorted(list(set(standard_genres))),
+        languages=sorted(list(set(standard_languages))),
+        years=years,
         directors=directors
     )
+    _FILTER_OPTIONS_CACHE[normalized_type] = resp
+    return resp
 
 
 @router.get("/search", response_model=List[MovieResponse], summary="Search and Filter Movies and TV Shows by Keyword, Genre, Language, Year, Director, and Content Type")
@@ -173,6 +167,10 @@ def search_movies(
                     Movie.genre.ilike(f"%{s}%")
                 )
             )
+        q_m = q_m.order_by(Movie.average_rating.desc().nullslast(), Movie.release_year.desc().nullslast())
+        if limit is not None and limit > 0:
+            fetch_limit = limit * 2 if include_series else limit
+            q_m = q_m.limit(fetch_limit)
         for m in q_m.all():
             results.append(movie_to_movie_response(m))
 
@@ -195,6 +193,10 @@ def search_movies(
                     WebSeries.genre.ilike(f"%{s}%")
                 )
             )
+        q_s = q_s.order_by(WebSeries.average_rating.desc().nullslast())
+        if limit is not None and limit > 0:
+            fetch_limit = limit * 2 if include_movies else limit
+            q_s = q_s.limit(fetch_limit)
         for s in q_s.all():
             results.append(series_to_movie_response(s))
 
@@ -215,197 +217,256 @@ def search_movies(
     return results
 
 
-def filter_category_list(
-    items: List[MovieResponse],
-    category_type: str,
-    director_name: Optional[str] = None,
-    genre_name: Optional[str] = None,
-    release_year: Optional[int] = None
-) -> List[MovieResponse]:
-    if category_type == "top_rated":
-        top = [m for m in items if m.average_rating is not None and m.average_rating >= 8.5]
-        return sorted(top, key=lambda x: x.average_rating or 0, reverse=True)
-    elif category_type in ["genre", "random_genre"] and genre_name:
-        return [m for m in items if m.genre and genre_name.lower() in m.genre.lower()]
-    elif category_type in ["year", "random_year"] and release_year:
-        return [m for m in items if m.release_year and int(m.release_year) == int(release_year)]
-    elif category_type == "director" and director_name:
-        return [m for m in items if m.director and m.director.name == director_name]
-    else:  # 'all'
-        return sorted(items, key=lambda x: x.id, reverse=True)
+POPULAR_GENRES = [
+    "Action", "Sci-Fi", "Comedy", "Drama", "Thriller", 
+    "Horror", "Animation", "Crime", "Adventure", "Fantasy",
+    "Mystery", "Romance"
+]
+POPULAR_YEARS = [
+    2024, 2023, 2022, 2021, 2020, 2019, 2018, 2017,
+    2016, 2015, 2014, 2012, 2010, 2008, 2004, 2000, 1999, 1994
+]
+_CACHED_ACTIVE_DIRECTORS = []
+
+
+_CACHED_ACTIVE_DIRECTORS: List[dict] = []
+
+
+def get_cached_directors(db: Session) -> List[dict]:
+    global _CACHED_ACTIVE_DIRECTORS
+    if not _CACHED_ACTIVE_DIRECTORS:
+        rows = (
+            db.query(Director.id, Director.name)
+            .join(Movie, Movie.director_id == Director.id)
+            .group_by(Director.id, Director.name)
+            .having(func.count(Movie.id) >= 2)
+            .all()
+        )
+        _CACHED_ACTIVE_DIRECTORS = [{"id": r[0], "name": r[1]} for r in rows if r[0] and r[1]]
+    return _CACHED_ACTIVE_DIRECTORS
 
 
 @router.get("/categories", response_model=List[MovieCategorySection], summary="Get Categorized Movie & Series Collections")
 def get_movie_categories(content_type: Optional[str] = None, db: Session = Depends(get_db)):
+    
     normalized_type = (content_type or "all").lower().strip()
     include_movies = normalized_type in ("all", "movie")
     include_series = normalized_type in ("all", "web_series", "series", "tv")
 
-    movies_raw = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
-    series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
-
-    all_items: List[MovieResponse] = (
-        [movie_to_movie_response(m) for m in movies_raw] +
-        [series_to_movie_response(s) for s in series_raw]
-    )
-
-    if not all_items:
-        return []
-
-    sections = []
+    sections: List[MovieCategorySection] = []
 
     # Dedicated TV Shows & Web Series collections
     if include_series and not include_movies:
-        series_items = [series_to_movie_response(s) for s in series_raw]
-        series_items.sort(key=lambda x: x.average_rating or 0, reverse=True)
-
+        # 1. Trending Series
+        series_items = (
+            db.query(WebSeries)
+            .options(joinedload(WebSeries.director))
+            .filter(WebSeries.average_rating.isnot(None))
+            .order_by(WebSeries.average_rating.desc().nullslast())
+            .limit(6)
+            .all()
+        )
         if series_items:
+            m_list = [series_to_movie_response(s) for s in series_items]
             sections.append(
                 MovieCategorySection(
                     title="🔥 Trending & Binge-Worthy Web Series",
                     description="Acclaimed multi-season dramas, thrillers, and award-winning television series",
                     category_type="trending_series",
-                    has_more=len(series_items) > 5,
-                    movies=series_items[:5]
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
             )
 
-        top_rated_series = [s for s in series_items if s.average_rating and s.average_rating >= 8.5]
-        if top_rated_series:
+        # 2. All-Time Top Rated Series
+        top_series = (
+            db.query(WebSeries)
+            .options(joinedload(WebSeries.director))
+            .filter(WebSeries.average_rating >= 8.5)
+            .order_by(WebSeries.average_rating.desc().nullslast())
+            .limit(6)
+            .all()
+        )
+        if top_series:
+            m_list = [series_to_movie_response(s) for s in top_series]
             sections.append(
                 MovieCategorySection(
                     title="⭐ All-Time Top Rated Series",
                     description="Highest rated critically acclaimed television masterpieces and miniseries",
                     category_type="top_rated",
-                    has_more=len(top_rated_series) > 5,
-                    movies=top_rated_series[:5]
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
             )
 
-        all_series_genres = set()
-        for s in series_items:
-            if s.genre:
-                for g in s.genre.split(","):
-                    if g.strip():
-                        all_series_genres.add(g.strip())
-        if all_series_genres:
-            selected_genre = random.choice(sorted(list(all_series_genres)))
-            genre_items = filter_category_list(series_items, "random_genre", genre_name=selected_genre)
-            if genre_items:
-                sections.append(
-                    MovieCategorySection(
-                        title=f"📺 Series Spotlight: {selected_genre}",
-                        description=f"Curated selection of top {selected_genre} web series to stream",
-                        category_type="random_genre",
-                        genre_name=selected_genre,
-                        has_more=len(genre_items) > 5,
-                        movies=genre_items[:5]
-                    )
+        # 3. Series Spotlight: Random Genre
+        selected_genre = random.choice(POPULAR_GENRES)
+        genre_series = (
+            db.query(WebSeries)
+            .options(joinedload(WebSeries.director))
+            .filter(WebSeries.genre.ilike(f"%{selected_genre}%"))
+            .order_by(WebSeries.average_rating.desc().nullslast())
+            .limit(6)
+            .all()
+        )
+        if genre_series:
+            m_list = [series_to_movie_response(s) for s in genre_series]
+            sections.append(
+                MovieCategorySection(
+                    title=f"📺 Series Spotlight: {selected_genre}",
+                    description=f"Curated selection of top {selected_genre} web series to stream",
+                    category_type="random_genre",
+                    genre_name=selected_genre,
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
+            )
 
-        all_series_years = list(set([s.release_year for s in series_items if s.release_year]))
-        if all_series_years:
-            selected_year = random.choice(sorted(all_series_years, reverse=True))
-            year_items = filter_category_list(series_items, "random_year", release_year=selected_year)
-            if year_items:
-                sections.append(
-                    MovieCategorySection(
-                        title=f"📅 Series Time Capsule: Released in {selected_year}",
-                        description=f"Outstanding television series premiered in {selected_year}",
-                        category_type="random_year",
-                        release_year=selected_year,
-                        has_more=len(year_items) > 5,
-                        movies=year_items[:5]
-                    )
+        # 4. Series Time Capsule: Random Year
+        selected_year = random.choice(POPULAR_YEARS)
+        year_series = (
+            db.query(WebSeries)
+            .options(joinedload(WebSeries.director))
+            .filter(WebSeries.release_year == selected_year)
+            .order_by(WebSeries.average_rating.desc().nullslast())
+            .limit(6)
+            .all()
+        )
+        if year_series:
+            m_list = [series_to_movie_response(s) for s in year_series]
+            sections.append(
+                MovieCategorySection(
+                    title=f"📅 Series Time Capsule: Released in {selected_year}",
+                    description=f"Outstanding television series premiered in {selected_year}",
+                    category_type="random_year",
+                    release_year=selected_year,
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
+            )
 
-        creators = [s.director.name for s in series_items if s.director and s.director.name]
-        if creators:
-            selected_creator = random.choice(list(set(creators)))
-            creator_items = filter_category_list(series_items, "director", director_name=selected_creator)
-            if creator_items:
+        # 5. Showrunner & Director Spotlight
+        active_dirs = get_cached_directors(db)
+        if active_dirs:
+            selected_director = random.choice(active_dirs)
+            dir_series = (
+                db.query(WebSeries)
+                .options(joinedload(WebSeries.director))
+                .filter(WebSeries.director_id == selected_director["id"])
+                .order_by(WebSeries.average_rating.desc().nullslast())
+                .limit(6)
+                .all()
+            )
+            if dir_series:
+                m_list = [series_to_movie_response(s) for s in dir_series]
                 sections.append(
                     MovieCategorySection(
-                        title=f"🎥 Showrunner & Director Spotlight: {selected_creator}",
-                        description=f"Iconic series directed or created by {selected_creator}",
+                        title=f"🎥 Showrunner & Director Spotlight: {selected_director['name']}",
+                        description=f"Iconic series directed or created by {selected_director['name']}",
                         category_type="director",
-                        director_name=selected_creator,
-                        has_more=len(creator_items) > 5,
-                        movies=creator_items[:5]
+                        director_name=selected_director["name"],
+                        has_more=len(m_list) > 5,
+                        movies=m_list[:5]
                     )
                 )
+
         return sections
 
     # Dedicated Movies collections
     if include_movies and not include_series:
-        movie_items = [movie_to_movie_response(m) for m in movies_raw]
-        movie_items.sort(key=lambda x: (x.average_rating or 0, x.release_year or 0), reverse=True)
-
-        top_rated_movies = filter_category_list(movie_items, "top_rated")
-        if top_rated_movies:
+        # 1. Top Rated Movies
+        top_movies = (
+            db.query(Movie)
+            .options(joinedload(Movie.director))
+            .filter(Movie.average_rating >= 8.0)
+            .order_by(Movie.average_rating.desc().nullslast(), Movie.release_year.desc().nullslast())
+            .limit(6)
+            .all()
+        )
+        if top_movies:
+            m_list = [movie_to_movie_response(m) for m in top_movies]
             sections.append(
                 MovieCategorySection(
                     title="⭐ All-Time Masterpiece Movies",
                     description="Highest rated critically acclaimed blockbuster and cinema classics",
                     category_type="top_rated",
-                    has_more=len(top_rated_movies) > 5,
-                    movies=top_rated_movies[:5]
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
             )
 
-        all_movie_genres = set()
-        for m in movie_items:
-            if m.genre:
-                for g in m.genre.split(","):
-                    if g.strip():
-                        all_movie_genres.add(g.strip())
-        if all_movie_genres:
-            selected_genre = random.choice(sorted(list(all_movie_genres)))
-            genre_items = filter_category_list(movie_items, "random_genre", genre_name=selected_genre)
-            if genre_items:
-                sections.append(
-                    MovieCategorySection(
-                        title=f"🎬 Cinema Spotlight: {selected_genre}",
-                        description=f"Top-rated {selected_genre} feature films in our collection",
-                        category_type="random_genre",
-                        genre_name=selected_genre,
-                        has_more=len(genre_items) > 5,
-                        movies=genre_items[:5]
-                    )
+        # 2. Cinema Spotlight: Random Genre
+        selected_genre = random.choice(POPULAR_GENRES)
+        genre_movies = (
+            db.query(Movie)
+            .options(joinedload(Movie.director))
+            .filter(Movie.genre.ilike(f"%{selected_genre}%"))
+            .order_by(Movie.average_rating.desc().nullslast())
+            .limit(6)
+            .all()
+        )
+        if genre_movies:
+            m_list = [movie_to_movie_response(m) for m in genre_movies]
+            sections.append(
+                MovieCategorySection(
+                    title=f"🎬 Cinema Spotlight: {selected_genre}",
+                    description=f"Top-rated {selected_genre} feature films in our collection",
+                    category_type="random_genre",
+                    genre_name=selected_genre,
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
+            )
 
-        all_movie_years = list(set([m.release_year for m in movie_items if m.release_year]))
-        if all_movie_years:
-            selected_year = random.choice(sorted(all_movie_years, reverse=True))
-            year_items = filter_category_list(movie_items, "random_year", release_year=selected_year)
-            if year_items:
-                sections.append(
-                    MovieCategorySection(
-                        title=f"📅 Cinema Time Capsule: Released in {selected_year}",
-                        description=f"Greatest films released in the year {selected_year}",
-                        category_type="random_year",
-                        release_year=selected_year,
-                        has_more=len(year_items) > 5,
-                        movies=year_items[:5]
-                    )
+        # 3. Cinema Time Capsule: Random Year
+        selected_year = random.choice(POPULAR_YEARS)
+        year_movies = (
+            db.query(Movie)
+            .options(joinedload(Movie.director))
+            .filter(Movie.release_year == selected_year)
+            .order_by(Movie.average_rating.desc().nullslast())
+            .limit(6)
+            .all()
+        )
+        if year_movies:
+            m_list = [movie_to_movie_response(m) for m in year_movies]
+            sections.append(
+                MovieCategorySection(
+                    title=f"📅 Cinema Time Capsule: Released in {selected_year}",
+                    description=f"Greatest films released in the year {selected_year}",
+                    category_type="random_year",
+                    release_year=selected_year,
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
+            )
 
-        directors = [m.director.name for m in movie_items if m.director and m.director.name]
-        if directors:
-            selected_director = random.choice(list(set(directors)))
-            director_items = filter_category_list(movie_items, "director", director_name=selected_director)
-            if director_items:
+        # 4. Legendary Director Spotlight
+        active_dirs = get_cached_directors(db)
+        if active_dirs:
+            selected_director = random.choice(active_dirs)
+            dir_movies = (
+                db.query(Movie)
+                .options(joinedload(Movie.director))
+                .filter(Movie.director_id == selected_director["id"])
+                .order_by(Movie.average_rating.desc().nullslast())
+                .limit(6)
+                .all()
+            )
+            if dir_movies:
+                m_list = [movie_to_movie_response(m) for m in dir_movies]
                 sections.append(
                     MovieCategorySection(
-                        title=f"🎥 Legendary Director Spotlight: {selected_director}",
-                        description=f"Film masterworks crafted by {selected_director}",
+                        title=f"🎥 Legendary Director Spotlight: {selected_director['name']}",
+                        description=f"Film masterworks crafted by {selected_director['name']}",
                         category_type="director",
-                        director_name=selected_director,
-                        has_more=len(director_items) > 5,
-                        movies=director_items[:5]
+                        director_name=selected_director["name"],
+                        has_more=len(m_list) > 5,
+                        movies=m_list[:5]
                     )
                 )
 
+        # 5. Universe Spotlight
         universes = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).all()
         valid_universes = [u for u in universes if u.contents]
         if valid_universes:
@@ -424,94 +485,124 @@ def get_movie_categories(content_type: Optional[str] = None, db: Session = Depen
                         movies=uni_movies[:5]
                     )
                 )
+
         return sections
 
-    # Default / Mixed Collections (both Movies & Web Series)
-    # 1. Binge-Worthy TV Shows & Web Series Row (if series exist)
-    if series_raw:
-        series_items = [series_to_movie_response(s) for s in series_raw]
-        series_items.sort(key=lambda x: x.average_rating or 0, reverse=True)
+    # Default / Mixed Collections (both Movies & Web Series on Home Page)
+    # 1. Binge-Worthy TV Shows & Web Series
+    series_items = (
+        db.query(WebSeries)
+        .options(joinedload(WebSeries.director))
+        .filter(WebSeries.average_rating >= 7.5)
+        .order_by(WebSeries.average_rating.desc().nullslast())
+        .limit(6)
+        .all()
+    )
+    if series_items:
+        m_list = [series_to_movie_response(s) for s in series_items]
         sections.append(
             MovieCategorySection(
                 title="📺 Binge-Worthy TV Shows & Web Series",
                 description="Acclaimed multi-season dramas, thrillers, and iconic series",
                 category_type="trending_series",
-                has_more=len(series_items) > 5,
-                movies=series_items[:5]
+                has_more=len(m_list) > 5,
+                movies=m_list[:5]
             )
         )
 
     # 2. Top Rated Masterpieces
-    top_rated_full = filter_category_list(all_items, "top_rated")
-    if top_rated_full:
+    top_movies = (
+        db.query(Movie)
+        .options(joinedload(Movie.director))
+        .filter(Movie.average_rating >= 8.0)
+        .order_by(Movie.average_rating.desc().nullslast(), Movie.release_year.desc().nullslast())
+        .limit(6)
+        .all()
+    )
+    if top_movies:
+        m_list = [movie_to_movie_response(m) for m in top_movies]
         sections.append(
             MovieCategorySection(
                 title="⭐ Top Rated Masterpieces",
                 description="Highest user rated critically acclaimed films and series",
                 category_type="top_rated",
-                has_more=len(top_rated_full) > 5,
-                movies=top_rated_full[:5]
+                has_more=len(m_list) > 5,
+                movies=m_list[:5]
             )
         )
 
-    # 3. Random Genre Row
-    all_genres = set()
-    for item in all_items:
-        if item.genre:
-            for g in item.genre.split(","):
-                g_clean = g.strip()
-                if g_clean:
-                    all_genres.add(g_clean)
-    if all_genres:
-        selected_genre = random.choice(sorted(list(all_genres)))
-        genre_items = filter_category_list(all_items, "random_genre", genre_name=selected_genre)
-        if genre_items:
-            sections.append(
-                MovieCategorySection(
-                    title=f"🎬 Genre Spotlight: {selected_genre}",
-                    description=f"Curated selection of top {selected_genre} entertainment in our collection",
-                    category_type="random_genre",
-                    genre_name=selected_genre,
-                    has_more=len(genre_items) > 5,
-                    movies=genre_items[:5]
-                )
+    # 3. Random Genre Spotlight
+    selected_genre = random.choice(POPULAR_GENRES)
+    genre_movies = (
+        db.query(Movie)
+        .options(joinedload(Movie.director))
+        .filter(Movie.genre.ilike(f"%{selected_genre}%"))
+        .order_by(Movie.average_rating.desc().nullslast())
+        .limit(6)
+        .all()
+    )
+    if genre_movies:
+        m_list = [movie_to_movie_response(m) for m in genre_movies]
+        sections.append(
+            MovieCategorySection(
+                title=f"🎬 Genre Spotlight: {selected_genre}",
+                description=f"Curated selection of top {selected_genre} entertainment in our collection",
+                category_type="random_genre",
+                genre_name=selected_genre,
+                has_more=len(m_list) > 5,
+                movies=m_list[:5]
             )
+        )
 
-    # 4. Random Year Row
-    all_years = list(set([item.release_year for item in all_items if item.release_year]))
-    if all_years:
-        selected_year = random.choice(sorted(all_years, reverse=True))
-        year_items = filter_category_list(all_items, "random_year", release_year=selected_year)
-        if year_items:
-            sections.append(
-                MovieCategorySection(
-                    title=f"📅 Time Capsule: Released in {selected_year}",
-                    description=f"Explore titles released in the year {selected_year}",
-                    category_type="random_year",
-                    release_year=selected_year,
-                    has_more=len(year_items) > 5,
-                    movies=year_items[:5]
-                )
+    # 4. Random Year Time Capsule
+    selected_year = random.choice(POPULAR_YEARS)
+    year_movies = (
+        db.query(Movie)
+        .options(joinedload(Movie.director))
+        .filter(Movie.release_year == selected_year)
+        .order_by(Movie.average_rating.desc().nullslast())
+        .limit(6)
+        .all()
+    )
+    if year_movies:
+        m_list = [movie_to_movie_response(m) for m in year_movies]
+        sections.append(
+            MovieCategorySection(
+                title=f"📅 Time Capsule: Released in {selected_year}",
+                description=f"Explore titles released in the year {selected_year}",
+                category_type="random_year",
+                release_year=selected_year,
+                has_more=len(m_list) > 5,
+                movies=m_list[:5]
             )
+        )
 
-    # 5. Director Spotlight (if directors exist)
-    directors = [item.director.name for item in all_items if item.director and item.director.name]
-    if directors:
-        selected_director = random.choice(list(set(directors)))
-        director_items = filter_category_list(all_items, "director", director_name=selected_director)
-        if director_items:
+    # 5. Director Spotlight
+    active_dirs = get_cached_directors(db)
+    if active_dirs:
+        selected_director = random.choice(active_dirs)
+        dir_movies = (
+            db.query(Movie)
+            .options(joinedload(Movie.director))
+            .filter(Movie.director_id == selected_director["id"])
+            .order_by(Movie.average_rating.desc().nullslast())
+            .limit(6)
+            .all()
+        )
+        if dir_movies:
+            m_list = [movie_to_movie_response(m) for m in dir_movies]
             sections.append(
                 MovieCategorySection(
-                    title=f"🎥 Director / Creator Spotlight: {selected_director}",
-                    description=f"Masterpieces crafted by {selected_director}",
+                    title=f"🎥 Director / Creator Spotlight: {selected_director['name']}",
+                    description=f"Masterpieces crafted by {selected_director['name']}",
                     category_type="director",
-                    director_name=selected_director,
-                    has_more=len(director_items) > 5,
-                    movies=director_items[:5]
+                    director_name=selected_director["name"],
+                    has_more=len(m_list) > 5,
+                    movies=m_list[:5]
                 )
             )
 
-    # 6. Random Cinematic Universe Row
+    # 6. Cinematic Universe
     universes = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).all()
     valid_universes = [u for u in universes if u.contents]
     if valid_universes:
@@ -551,6 +642,9 @@ def get_category_movies(
     include_movies = normalized_type in ("all", "movie")
     include_series = normalized_type in ("all", "web_series", "series", "tv")
 
+    paginated_movies: List[MovieResponse] = []
+    has_more = False
+
     if category_type == "universe" and universe_id:
         uni = db.query(CinematicUniverse).options(joinedload(CinematicUniverse.contents)).filter(CinematicUniverse.id == universe_id).first()
         if uni:
@@ -562,30 +656,95 @@ def get_category_movies(
                     (normalized_type in ("web_series", "series", "tv") and c.movie.content_type == "web_series")
                 )
             ]
-        else:
-            filtered = []
+            paginated_movies = filtered[offset : offset + limit]
+            has_more = (offset + limit) < len(filtered)
     elif category_type == "trending_series":
-        series = db.query(WebSeries).options(joinedload(WebSeries.director)).all()
-        series_items = [series_to_movie_response(s) for s in series]
-        series_items.sort(key=lambda x: x.average_rating or 0, reverse=True)
-        filtered = series_items
-    else:
-        movies_raw = db.query(Movie).options(joinedload(Movie.director)).all() if include_movies else []
-        series_raw = db.query(WebSeries).options(joinedload(WebSeries.director)).all() if include_series else []
-        all_items = (
-            [movie_to_movie_response(m) for m in movies_raw] +
-            [series_to_movie_response(s) for s in series_raw]
+        items = (
+            db.query(WebSeries)
+            .options(joinedload(WebSeries.director))
+            .filter(WebSeries.average_rating.isnot(None))
+            .order_by(WebSeries.average_rating.desc().nullslast())
+            .offset(offset)
+            .limit(limit + 1)
+            .all()
         )
-        filtered = filter_category_list(
-            all_items,
-            category_type=category_type,
-            genre_name=genre_name,
-            release_year=release_year,
-            director_name=director_name
-        )
-    
-    paginated_movies = filtered[offset : offset + limit]
-    has_more = (offset + limit) < len(filtered)
+        has_more = len(items) > limit
+        paginated_movies = [series_to_movie_response(s) for s in items[:limit]]
+    elif category_type == "top_rated":
+        if normalized_type in ("web_series", "series", "tv"):
+            items = (
+                db.query(WebSeries)
+                .options(joinedload(WebSeries.director))
+                .filter(WebSeries.average_rating.isnot(None))
+                .order_by(WebSeries.average_rating.desc().nullslast())
+                .offset(offset)
+                .limit(limit + 1)
+                .all()
+            )
+            has_more = len(items) > limit
+            paginated_movies = [series_to_movie_response(s) for s in items[:limit]]
+        else:
+            items = (
+                db.query(Movie)
+                .options(joinedload(Movie.director))
+                .filter(Movie.average_rating.isnot(None))
+                .order_by(Movie.average_rating.desc().nullslast(), Movie.release_year.desc().nullslast())
+                .offset(offset)
+                .limit(limit + 1)
+                .all()
+            )
+            has_more = len(items) > limit
+            paginated_movies = [movie_to_movie_response(m) for m in items[:limit]]
+    elif category_type in ("random_genre", "genre"):
+        if normalized_type in ("web_series", "series", "tv"):
+            q = db.query(WebSeries).options(joinedload(WebSeries.director))
+            if genre_name:
+                q = q.filter(WebSeries.genre.ilike(f"%{genre_name}%"))
+            items = q.order_by(WebSeries.average_rating.desc().nullslast()).offset(offset).limit(limit + 1).all()
+            has_more = len(items) > limit
+            paginated_movies = [series_to_movie_response(s) for s in items[:limit]]
+        else:
+            q = db.query(Movie).options(joinedload(Movie.director))
+            if genre_name:
+                q = q.filter(Movie.genre.ilike(f"%{genre_name}%"))
+            items = q.order_by(Movie.average_rating.desc().nullslast()).offset(offset).limit(limit + 1).all()
+            has_more = len(items) > limit
+            paginated_movies = [movie_to_movie_response(m) for m in items[:limit]]
+    elif category_type in ("random_year", "year"):
+        if normalized_type in ("web_series", "series", "tv"):
+            q = db.query(WebSeries).options(joinedload(WebSeries.director))
+            if release_year:
+                q = q.filter(WebSeries.release_year == release_year)
+            items = q.order_by(WebSeries.average_rating.desc().nullslast()).offset(offset).limit(limit + 1).all()
+            has_more = len(items) > limit
+            paginated_movies = [series_to_movie_response(s) for s in items[:limit]]
+        else:
+            q = db.query(Movie).options(joinedload(Movie.director))
+            if release_year:
+                q = q.filter(Movie.release_year == release_year)
+            items = q.order_by(Movie.average_rating.desc().nullslast()).offset(offset).limit(limit + 1).all()
+            has_more = len(items) > limit
+            paginated_movies = [movie_to_movie_response(m) for m in items[:limit]]
+    elif category_type == "director":
+        dir_id = None
+        if director_name:
+            dir_obj = db.query(Director).filter(Director.name == director_name).first()
+            if dir_obj:
+                dir_id = dir_obj.id
+        if normalized_type in ("web_series", "series", "tv"):
+            q = db.query(WebSeries).options(joinedload(WebSeries.director))
+            if dir_id:
+                q = q.filter(WebSeries.director_id == dir_id)
+            items = q.order_by(WebSeries.average_rating.desc().nullslast()).offset(offset).limit(limit + 1).all()
+            has_more = len(items) > limit
+            paginated_movies = [series_to_movie_response(s) for s in items[:limit]]
+        else:
+            q = db.query(Movie).options(joinedload(Movie.director))
+            if dir_id:
+                q = q.filter(Movie.director_id == dir_id)
+            items = q.order_by(Movie.average_rating.desc().nullslast()).offset(offset).limit(limit + 1).all()
+            has_more = len(items) > limit
+            paginated_movies = [movie_to_movie_response(m) for m in items[:limit]]
 
     return PaginatedCategoryMovies(
         category_type=category_type,
@@ -1223,15 +1382,107 @@ def get_content_ott_url(
     raise HTTPException(status_code=404, detail=f"Title with ID '{clean_id}' not found.")
 
 
+def enrich_movie_if_needed(movie: Movie, db: Session) -> Movie:
+    if not movie.tmdb_id:
+        return movie
+    if movie.duration is not None and movie.imdb_id is not None and movie.director_id is not None:
+        return movie
+
+    try:
+        url = f"https://api.themoviedb.org/3/movie/{movie.tmdb_id}"
+        params = {"api_key": settings.TMDB_API_KEY, "append_to_response": "credits"}
+        resp = httpx.get(url, params=params, timeout=5.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            updated = False
+            if movie.duration is None and data.get("runtime"):
+                movie.duration = int(data["runtime"])
+                updated = True
+            if movie.imdb_id is None and data.get("imdb_id"):
+                movie.imdb_id = str(data["imdb_id"]).strip()
+                updated = True
+            if movie.director_id is None:
+                credits_data = data.get("credits", {}) or {}
+                crew = credits_data.get("crew", []) or []
+                director_entry = next((c for c in crew if c.get("job") == "Director" and c.get("name")), None)
+                if director_entry and director_entry.get("name"):
+                    dir_name = director_entry["name"].strip()
+                    d = db.query(Director).filter(Director.name.ilike(dir_name)).first()
+                    if not d:
+                        d = Director(name=dir_name)
+                        db.add(d)
+                        db.flush()
+                    movie.director_id = d.id
+                    movie.director = d
+                    updated = True
+            if updated:
+                db.commit()
+                db.refresh(movie)
+    except Exception as e:
+        logger.warning(f"Failed to auto-enrich movie {movie.id} (TMDB {movie.tmdb_id}): {e}")
+    return movie
+
+
+def enrich_series_if_needed(series: WebSeries, db: Session) -> WebSeries:
+    if not series.tmdb_id:
+        return series
+    if series.imdb_id is not None and series.director_id is not None:
+        return series
+
+    try:
+        url = f"https://api.themoviedb.org/3/tv/{series.tmdb_id}"
+        params = {"api_key": settings.TMDB_API_KEY, "append_to_response": "credits,external_ids"}
+        resp = httpx.get(url, params=params, timeout=5.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            updated = False
+            if series.imdb_id is None:
+                ext_ids = data.get("external_ids", {}) or {}
+                imdb_id = ext_ids.get("imdb_id")
+                if imdb_id:
+                    series.imdb_id = str(imdb_id).strip()
+                    updated = True
+            if series.director_id is None:
+                creator = None
+                created_by = data.get("created_by", [])
+                if created_by and len(created_by) > 0 and created_by[0].get("name"):
+                    creator = created_by[0]["name"].strip()
+                else:
+                    credits_data = data.get("credits", {}) or {}
+                    crew = credits_data.get("crew", []) or []
+                    dir_entry = next((c for c in crew if c.get("job") == "Director" or c.get("department") == "Directing"), None)
+                    if dir_entry and dir_entry.get("name"):
+                        creator = dir_entry["name"].strip()
+                if creator:
+                    d = db.query(Director).filter(Director.name.ilike(creator)).first()
+                    if not d:
+                        d = Director(name=creator)
+                        db.add(d)
+                        db.flush()
+                    series.director_id = d.id
+                    series.director = d
+                    updated = True
+            if updated:
+                db.commit()
+                db.refresh(series)
+    except Exception as e:
+        logger.warning(f"Failed to auto-enrich series {series.series_id} (TMDB {series.tmdb_id}): {e}")
+    return series
+
+
 @router.get("/{movie_id}", response_model=MovieResponse, summary="Get Single Movie Details")
 def get_movie_detail(movie_id: str, db: Session = Depends(get_db)):
     movie = db.query(Movie).options(joinedload(Movie.director)).filter(Movie.id == movie_id).first()
     if movie:
+        if movie.tmdb_id and (movie.duration is None or movie.director_id is None or movie.imdb_id is None):
+            movie = enrich_movie_if_needed(movie, db)
         return movie_to_movie_response(movie)
     
     # Fallback to WebSeries if ID matches
     series = db.query(WebSeries).options(joinedload(WebSeries.director)).filter(WebSeries.series_id == movie_id).first()
     if series:
+        if series.tmdb_id and (series.director_id is None or series.imdb_id is None):
+            series = enrich_series_if_needed(series, db)
         return series_to_movie_response(series)
 
     raise HTTPException(status_code=404, detail="Title not found in database")

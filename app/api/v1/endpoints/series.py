@@ -14,6 +14,9 @@ from app.schemas.series import (
     EpisodeResponse,
 )
 
+import httpx
+from app.core.config import settings
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
@@ -79,6 +82,46 @@ def get_series_detail(series_id: str, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Web Series with ID '{series_id}' not found",
         )
+
+    if series.tmdb_id and (series.imdb_id is None or series.director_id is None):
+        try:
+            url = f"https://api.themoviedb.org/3/tv/{series.tmdb_id}"
+            params = {"api_key": settings.TMDB_API_KEY, "append_to_response": "credits,external_ids"}
+            resp = httpx.get(url, params=params, timeout=5.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                updated = False
+                if series.imdb_id is None:
+                    ext_ids = data.get("external_ids", {}) or {}
+                    imdb_id = ext_ids.get("imdb_id")
+                    if imdb_id:
+                        series.imdb_id = str(imdb_id).strip()
+                        updated = True
+                if series.director_id is None:
+                    creator = None
+                    created_by = data.get("created_by", [])
+                    if created_by and len(created_by) > 0 and created_by[0].get("name"):
+                        creator = created_by[0]["name"].strip()
+                    else:
+                        credits_data = data.get("credits", {}) or {}
+                        crew = credits_data.get("crew", []) or []
+                        dir_entry = next((c for c in crew if c.get("job") == "Director" or c.get("department") == "Directing"), None)
+                        if dir_entry and dir_entry.get("name"):
+                            creator = dir_entry["name"].strip()
+                    if creator:
+                        d = db.query(Director).filter(Director.name.ilike(creator)).first()
+                        if not d:
+                            d = Director(name=creator)
+                            db.add(d)
+                            db.flush()
+                        series.director_id = d.id
+                        series.director = d
+                        updated = True
+                if updated:
+                    db.commit()
+                    db.refresh(series)
+        except Exception as e:
+            logger.warning(f"Failed to auto-enrich series {series.series_id}: {e}")
 
     return series
 
