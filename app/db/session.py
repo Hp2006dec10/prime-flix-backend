@@ -23,6 +23,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     with engine.begin() as conn:
         try:
+            conn.execute(text("SET lock_timeout = '3s';"))
             conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre VARCHAR(255);"))
             conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS genre_percentages JSON;"))
             conn.execute(text("ALTER TABLE movies ADD COLUMN IF NOT EXISTS language VARCHAR(100);"))
